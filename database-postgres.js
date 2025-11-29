@@ -1,4 +1,3 @@
-// PostgreSQL Database Manager - Optimized for Fly.io PostgreSQL
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -6,9 +5,9 @@ export class PostgresDatabaseManager {
   constructor(connectionString) {
     this.pool = new Pool({
       connectionString,
-      max: 10, // Maximum 10 connections in pool
+      max: 10,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 30000, // Increased from 5s to 30s for more reliable connections
+      connectionTimeoutMillis: 30000,
       keepAlive: true,
       keepAliveInitialDelayMillis: 10000,
       allowExitOnIdle: false,
@@ -19,11 +18,9 @@ export class PostgresDatabaseManager {
     });
   }
 
-  // Initialize all tables
   async initializeTables() {
     const client = await this.pool.connect();
     try {
-      // Create players table
       await client.query(`
         CREATE TABLE IF NOT EXISTS players (
           guid TEXT PRIMARY KEY,
@@ -57,7 +54,6 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_players_namelower ON players("displayNameLower");
       `);
 
-      // Create sessions table
       await client.query(`
         CREATE TABLE IF NOT EXISTS sessions (
           id TEXT PRIMARY KEY,
@@ -88,7 +84,6 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions("isActive") WHERE "isActive" = TRUE;
       `);
 
-      // Create player_sessions junction table
       await client.query(`
         CREATE TABLE IF NOT EXISTS player_sessions (
           "playerGuid" TEXT NOT NULL,
@@ -103,7 +98,6 @@ export class PostgresDatabaseManager {
         )
       `);
 
-      // Create track_records table
       await client.query(`
         CREATE TABLE IF NOT EXISTS track_records (
           id TEXT PRIMARY KEY,
@@ -124,7 +118,6 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_track_records_player ON track_records("playerGuid");
       `);
 
-      // Create contacts table
       await client.query(`
         CREATE TABLE IF NOT EXISTS contacts (
           id TEXT PRIMARY KEY,
@@ -142,7 +135,6 @@ export class PostgresDatabaseManager {
         )
       `);
 
-      // Create holeshots table
       await client.query(`
         CREATE TABLE IF NOT EXISTS holeshots (
           id TEXT PRIMARY KEY,
@@ -156,7 +148,6 @@ export class PostgresDatabaseManager {
         )
       `);
 
-      // Create leader_election table
       await client.query(`
         CREATE TABLE IF NOT EXISTS leader_election (
           id TEXT PRIMARY KEY DEFAULT 'primary',
@@ -171,8 +162,6 @@ export class PostgresDatabaseManager {
       client.release();
     }
   }
-
-  // ========== PLAYER OPERATIONS ==========
 
   async upsertPlayer(player) {
     const now = Date.now();
@@ -219,7 +208,6 @@ export class PostgresDatabaseManager {
     const client = await this.pool.connect();
 
     try {
-      // Use PostgreSQL's UNNEST for bulk upsert - MUCH faster than individual inserts
       const guids = [];
       const displayNames = [];
       const displayNamesLower = [];
@@ -338,13 +326,11 @@ export class PostgresDatabaseManager {
     const changes = [];
     const totalPlayers = raceResults.length;
 
-    // Find who got the holeshot (fastest holeshot time > 0)
     const holeshotWinner = raceResults
       .filter(r => r.holeshotTime && r.holeshotTime > 0)
       .sort((a, b) => a.holeshotTime - b.holeshotTime)[0];
     const holeshotGuid = holeshotWinner?.playerGuid;
 
-    // No MMR changes for races with less than 3 players
     if (totalPlayers < 3) {
       for (let i = 0; i < raceResults.length; i++) {
         changes.push({
@@ -359,10 +345,8 @@ export class PostgresDatabaseManager {
       return changes;
     }
 
-    // Dynamic MMR calculation based on field size and position
     let baseMMR = Math.pow(totalPlayers, 0.70) * 2.4;
 
-    // Reduce MMR gains for very small races (3-5 players)
     if (totalPlayers <= 5) {
       baseMMR *= 0.6;
     }
@@ -376,24 +360,20 @@ export class PostgresDatabaseManager {
       let srChange = 0.01;
 
       if (position < zeroPoint) {
-        // Winners: Top ~55% gain MMR
         const positionFactor = Math.pow(
           (zeroPoint - position) / Math.max(1, zeroPoint - 1),
           1.2
         );
         mmrChange = Math.round(baseMMR * positionFactor);
 
-        // Bonus for top finishers in larger races (10+ players)
         if (totalPlayers >= 10) {
           if (position === 1) mmrChange += 3;
           if (position === 2) mmrChange += 2;
           if (position === 3) mmrChange += 1;
         }
       } else if (position === zeroPoint) {
-        // Zero point: No MMR change
         mmrChange = 0;
       } else {
-        // Losers: Bottom ~45% lose MMR (at 0.6x rate)
         const lossZone = totalPlayers - zeroPoint;
         const lossFactor = (position - zeroPoint) / lossZone;
         mmrChange = -Math.round((baseMMR * lossFactor) * 0.6);
@@ -558,8 +538,6 @@ export class PostgresDatabaseManager {
       notes: row.notes
     };
   }
-
-  // ========== SESSION OPERATIONS ==========
 
   async createSession(session) {
     const id = session.id || `${session.serverId}_${Date.now()}`;
@@ -730,8 +708,6 @@ export class PostgresDatabaseManager {
     };
   }
 
-  // ========== TRACK RECORD OPERATIONS ==========
-
   async checkSinglePlayerPB(record) {
     const { playerGuid, playerName, trackName, lapTime, sessionType, bikeName } = record;
     const id = `${playerGuid}_${trackName}`;
@@ -840,8 +816,6 @@ export class PostgresDatabaseManager {
     };
   }
 
-  // ========== CONTACT OPERATIONS ==========
-
   async batchInsertContacts(contacts) {
     if (!contacts || contacts.length === 0) return;
 
@@ -872,8 +846,6 @@ export class PostgresDatabaseManager {
     }
   }
 
-  // ========== HOLESHOT OPERATIONS ==========
-
   async batchInsertHoleshots(holeshots) {
     if (!holeshots || holeshots.length === 0) return;
 
@@ -900,8 +872,6 @@ export class PostgresDatabaseManager {
       client.release();
     }
   }
-
-  // ========== DATA EXPORT ==========
 
   async getCompleteDataPackage() {
     const [
@@ -932,10 +902,7 @@ export class PostgresDatabaseManager {
     };
   }
 
-  // ========== LEADER ELECTION ==========
-
   async initLeaderTable() {
-    // Table already created in initializeTables()
     console.log('[LEADER] Leader election table ready');
   }
 
@@ -1030,7 +997,6 @@ export class PostgresDatabaseManager {
     }
   }
 
-  // Cleanup pool on shutdown
   async close() {
     await this.pool.end();
     console.log('[POSTGRES] Connection pool closed');

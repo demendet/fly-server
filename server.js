@@ -1,6 +1,3 @@
-// MXBikes Stats Server - Fly.io Edition
-// Replaces Cloudflare Workers + Durable Objects
-
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -8,7 +5,6 @@ import admin from 'firebase-admin';
 import { PostgresDatabaseManager } from './database-postgres.js';
 import { StateManager } from './state-manager.js';
 
-// Initialize Firebase Admin SDK
 let firebaseAdmin = null;
 try {
   const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -29,7 +25,6 @@ try {
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Environment variables
 const env = {
   DATABASE_URL: process.env.DATABASE_URL,
   MXBIKES_API_URL_1: process.env.MXBIKES_API_URL_1,
@@ -39,21 +34,16 @@ const env = {
   STEAM_API_KEY: process.env.STEAM_API_KEY,
 };
 
-// ========== STEAM UTILITY FUNCTIONS ==========
-
-// Convert MX Bikes GUID to Steam64 ID
-// GUID format: FF + Steam64 in hex (e.g., FF011000010BFF56AA)
 function guidToSteam64(guid) {
   if (!guid || guid.length !== 18) return null;
   try {
-    const steamHex = guid.substring(2); // Remove 'FF' prefix
+    const steamHex = guid.substring(2);
     return BigInt('0x' + steamHex).toString();
   } catch (e) {
     return null;
   }
 }
 
-// Convert Steam64 ID to MX Bikes GUID
 function steam64ToGuid(steam64) {
   if (!steam64) return null;
   try {
@@ -64,7 +54,6 @@ function steam64ToGuid(steam64) {
   }
 }
 
-// Fetch Steam profile from Steam Web API
 async function fetchSteamProfile(steam64) {
   if (!env.STEAM_API_KEY) {
     throw new Error('Steam API key not configured');
@@ -97,13 +86,12 @@ async function fetchSteamProfile(steam64) {
   };
 }
 
-// Initialize database and state manager
 let db;
 let stateManager;
 
 try {
   db = new PostgresDatabaseManager(env.DATABASE_URL);
-  await db.initializeTables(); // Create tables if they don't exist
+  await db.initializeTables();
   stateManager = new StateManager(db, env);
   console.log('[INIT] PostgreSQL Database and StateManager initialized');
 } catch (err) {
@@ -111,7 +99,6 @@ try {
   process.exit(1);
 }
 
-// CORS config
 const allowedOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'];
 app.use(cors({
   origin: (origin, callback) => {
@@ -127,19 +114,14 @@ app.use(cors({
 
 app.use(express.json());
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
 
-// Root
 app.get('/', (req, res) => {
   res.send('MXBikes Stats Server v3 - Fly.io Edition');
 });
 
-// ========== API ROUTES ==========
-
-// Get all players
 app.get('/api/players', async (req, res) => {
   try {
     const players = await db.getAllPlayers();
@@ -149,7 +131,6 @@ app.get('/api/players', async (req, res) => {
   }
 });
 
-// Get recent sessions
 app.get('/api/sessions', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
@@ -160,7 +141,6 @@ app.get('/api/sessions', async (req, res) => {
   }
 });
 
-// Admin: Cleanup rotation server data (temporary endpoint)
 app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
   try {
     const { secretKey } = req.body;
@@ -179,7 +159,6 @@ app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
     ];
 
     for (const serverPattern of ROTATION_SERVERS) {
-      // Get session IDs
       const sessions = await db.client.execute({
         sql: 'SELECT id FROM sessions WHERE serverName LIKE ?',
         args: [serverPattern]
@@ -187,7 +166,6 @@ app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
 
       for (const row of sessions.rows) {
         const sessionId = row.id;
-        // Delete related data
         const ps = await db.client.execute({ sql: 'DELETE FROM player_sessions WHERE sessionId = ?', args: [sessionId] });
         const c = await db.client.execute({ sql: 'DELETE FROM contacts WHERE sessionId = ?', args: [sessionId] });
         const h = await db.client.execute({ sql: 'DELETE FROM holeshots WHERE sessionId = ?', args: [sessionId] });
@@ -196,7 +174,6 @@ app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
         results.holeshots += h.rowsAffected || 0;
       }
 
-      // Delete sessions
       const s = await db.client.execute({
         sql: 'DELETE FROM sessions WHERE serverName LIKE ?',
         args: [serverPattern]
@@ -204,7 +181,6 @@ app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
       results.sessions += s.rowsAffected || 0;
     }
 
-    // Clean track records for rotation tracks
     const ROTATION_TRACKS = [
       'Temecula Creek', 'Across The Sea', '2025.ARKsxRD1', 'Country Side',
       'KeLLz - RedBud 2023', 'KeLLz - Unadilla 2022', 'KeLLz - Washougal 2023',
@@ -227,7 +203,6 @@ app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
   }
 });
 
-// Get player sessions (race history)
 app.get('/api/player/:guid/sessions', async (req, res) => {
   try {
     const { guid } = req.params;
@@ -239,7 +214,6 @@ app.get('/api/player/:guid/sessions', async (req, res) => {
   }
 });
 
-// Get leaderboards
 app.get('/api/leaderboards', async (req, res) => {
   try {
     const [mmr, safetyRating] = await Promise.all([
@@ -252,7 +226,6 @@ app.get('/api/leaderboards', async (req, res) => {
   }
 });
 
-// Get track records
 app.get('/api/records', async (req, res) => {
   try {
     const records = await db.getAllTrackRecords();
@@ -262,7 +235,6 @@ app.get('/api/records', async (req, res) => {
   }
 });
 
-// Get global stats (total races, etc.)
 app.get('/api/stats', async (req, res) => {
   try {
     const totalRaces = await db.getTotalFinalizedSessionsCount();
@@ -272,7 +244,6 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// Get servers (cached)
 app.get('/api/servers', async (req, res) => {
   try {
     let serverData = stateManager.getCachedServerData();
@@ -285,12 +256,10 @@ app.get('/api/servers', async (req, res) => {
   }
 });
 
-// Link/create player profile
 app.post('/api/players/link', async (req, res) => {
   try {
     const { playerGuid, displayName } = req.body;
 
-    // Validate GUID format
     const guidRegex = /^[0-9a-f]{18}$/i;
     if (!playerGuid || !guidRegex.test(playerGuid)) {
       return res.status(400).json({ error: 'Invalid Player GUID format' });
@@ -327,7 +296,6 @@ app.post('/api/players/link', async (req, res) => {
   }
 });
 
-// Player connect (from Manager)
 app.post('/api/players/connect', async (req, res) => {
   try {
     const { playerGuid, playerName, serverName, trackName, raceNumber, bikeName } = req.body;
@@ -364,15 +332,12 @@ app.post('/api/players/connect', async (req, res) => {
   }
 });
 
-// Check PB (from Manager)
 app.post('/api/check-pb', async (req, res) => {
   try {
     const { playerGuid, playerName, trackName, lapTime, sessionType, raceNumber, bikeName, serverId } = req.body;
 
-    // Resolve track name - use provided or lookup from server cache
     let resolvedTrackName = trackName;
     if (!resolvedTrackName && serverId) {
-      // Try to get track name from serverTracks map (populated during update cycle)
       resolvedTrackName = stateManager.getTrackForServer(serverId);
       if (resolvedTrackName) {
         console.log(`[PB] Resolved track from serverTracks: ${resolvedTrackName} (serverId: ${serverId})`);
@@ -411,9 +376,6 @@ app.post('/api/check-pb', async (req, res) => {
   }
 });
 
-// ========== STEAM API ROUTES ==========
-
-// Get Steam profile by Steam64 ID
 app.get('/api/steam/profile/:steamId', async (req, res) => {
   try {
     const { steamId } = req.params;
@@ -434,7 +396,6 @@ app.get('/api/steam/profile/:steamId', async (req, res) => {
   }
 });
 
-// Get Steam profile by MX Bikes GUID (auto-converts)
 app.get('/api/steam/profile/guid/:guid', async (req, res) => {
   try {
     const { guid } = req.params;
@@ -450,7 +411,6 @@ app.get('/api/steam/profile/guid/:guid', async (req, res) => {
       return res.status(404).json({ error: 'Steam profile not found' });
     }
 
-    // Include the GUID in response for convenience
     res.json({ ...profile, guid: normalizedGuid });
   } catch (err) {
     console.error('[STEAM] Error fetching profile by GUID:', err.message);
@@ -458,7 +418,6 @@ app.get('/api/steam/profile/guid/:guid', async (req, res) => {
   }
 });
 
-// Convert Steam64 to GUID (utility endpoint)
 app.get('/api/steam/convert/to-guid/:steamId', (req, res) => {
   const { steamId } = req.params;
   const guid = steam64ToGuid(steamId);
@@ -470,7 +429,6 @@ app.get('/api/steam/convert/to-guid/:steamId', (req, res) => {
   res.json({ steamId, guid });
 });
 
-// Convert GUID to Steam64 (utility endpoint)
 app.get('/api/steam/convert/to-steam/:guid', (req, res) => {
   const { guid } = req.params;
   const steam64 = guidToSteam64(guid.toUpperCase());
@@ -482,12 +440,10 @@ app.get('/api/steam/convert/to-steam/:guid', (req, res) => {
   res.json({ guid: guid.toUpperCase(), steamId: steam64 });
 });
 
-// Verify Steam OpenID callback and return user data + Firebase custom token
 app.post('/api/steam/verify', async (req, res) => {
   try {
     const params = req.body;
 
-    // Verify with Steam
     const verifyParams = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
       verifyParams.append(key, value);
@@ -507,7 +463,6 @@ app.post('/api/steam/verify', async (req, res) => {
       return res.status(401).json({ error: 'Steam authentication failed', verified: false });
     }
 
-    // Extract Steam ID from claimed_id
     const claimedId = params['openid.claimed_id'];
     const steamIdMatch = claimedId?.match(/\/id\/(\d+)$/);
     const steamId = steamIdMatch?.[1];
@@ -516,25 +471,20 @@ app.post('/api/steam/verify', async (req, res) => {
       return res.status(400).json({ error: 'Could not extract Steam ID' });
     }
 
-    // Get Steam profile
     const profile = await fetchSteamProfile(steamId);
     if (!profile) {
       return res.status(404).json({ error: 'Steam profile not found' });
     }
 
-    // Convert to GUID
     const guid = steam64ToGuid(steamId);
 
-    // Check if player exists in database
     const existingPlayer = await db.getPlayer(guid);
 
-    // Generate Firebase custom token if Firebase Admin is configured
     let firebaseToken = null;
     let existingFirebaseUser = null;
 
     if (firebaseAdmin) {
       try {
-        // Check if a user already exists with this Steam ID linked in Firestore
         const usersSnapshot = await firebaseAdmin.firestore()
           .collection('users')
           .where('steamId', '==', steamId)
@@ -544,13 +494,11 @@ app.post('/api/steam/verify', async (req, res) => {
         let firebaseUid;
 
         if (!usersSnapshot.empty) {
-          // User exists with Steam linked - use their actual UID
           const existingDoc = usersSnapshot.docs[0];
           firebaseUid = existingDoc.id;
           existingFirebaseUser = { id: existingDoc.id, ...existingDoc.data() };
           console.log(`[STEAM] Found existing user ${firebaseUid} with Steam linked`);
         } else {
-          // New Steam user - use steam_ prefix
           firebaseUid = `steam_${steamId}`;
           console.log(`[STEAM] New Steam user, using UID: ${firebaseUid}`);
         }
@@ -563,7 +511,6 @@ app.post('/api/steam/verify', async (req, res) => {
         console.log(`[STEAM] Generated Firebase token for ${profile.displayName} (${firebaseUid})`);
       } catch (tokenErr) {
         console.error('[STEAM] Failed to generate Firebase token:', tokenErr.message);
-        // Continue without token - frontend will handle gracefully
       }
     }
 
@@ -582,7 +529,6 @@ app.post('/api/steam/verify', async (req, res) => {
   }
 });
 
-// Batch fetch Steam avatars for multiple GUIDs
 app.post('/api/steam/avatars', async (req, res) => {
   try {
     const { guids } = req.body;
@@ -591,10 +537,8 @@ app.post('/api/steam/avatars', async (req, res) => {
       return res.status(400).json({ error: 'guids must be a non-empty array' });
     }
 
-    // Limit to 100 at a time (Steam API limit)
     const limitedGuids = guids.slice(0, 100);
 
-    // Convert GUIDs to Steam64 IDs
     const steam64s = limitedGuids
       .map(guid => ({ guid: guid.toUpperCase(), steam64: guidToSteam64(guid.toUpperCase()) }))
       .filter(item => item.steam64);
@@ -603,7 +547,6 @@ app.post('/api/steam/avatars', async (req, res) => {
       return res.json({ avatars: {} });
     }
 
-    // Fetch all profiles in one API call
     const steamIds = steam64s.map(s => s.steam64).join(',');
     const response = await fetch(
       `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${env.STEAM_API_KEY}&steamids=${steamIds}`
@@ -616,7 +559,6 @@ app.post('/api/steam/avatars', async (req, res) => {
     const data = await response.json();
     const players = data.response?.players || [];
 
-    // Build GUID -> avatar map
     const avatars = {};
     for (const player of players) {
       const guid = steam64ToGuid(player.steamid);
@@ -637,12 +579,9 @@ app.post('/api/steam/avatars', async (req, res) => {
   }
 });
 
-// ========== REPORTS & BAN APPEALS ==========
-
 const DISCORD_REPORTS_WEBHOOK = process.env.DISCORD_REPORTS_WEBHOOK;
 const DISCORD_BAN_APPEALS_WEBHOOK = process.env.DISCORD_BAN_APPEALS_WEBHOOK;
 
-// Submit a player report
 app.post('/api/reports', async (req, res) => {
   try {
     const {
@@ -663,15 +602,14 @@ app.post('/api/reports', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Send to Discord webhook
     if (DISCORD_REPORTS_WEBHOOK) {
       const reasonColors = {
-        cheating: 0xFF0000,          // Red
-        intentional_crashing: 0xFF8C00, // Orange
-        toxic_behavior: 0xFFD700,    // Yellow
-        inappropriate_name: 0x9400D3, // Purple
-        exploiting: 0x0000FF,        // Blue
-        other: 0x808080              // Gray
+        cheating: 0xFF0000,
+        intentional_crashing: 0xFF8C00,
+        toxic_behavior: 0xFFD700,
+        inappropriate_name: 0x9400D3,
+        exploiting: 0x0000FF,
+        other: 0x808080
       };
 
       const embed = {
@@ -693,7 +631,6 @@ app.post('/api/reports', async (req, res) => {
         embed.fields.push({ name: 'Discord', value: discordUsername, inline: true });
       }
 
-      // Description as its own field at the end
       embed.fields.push({ name: 'Description', value: description.slice(0, 1024) });
 
       if (videoUrl) {
@@ -726,7 +663,6 @@ app.post('/api/reports', async (req, res) => {
   }
 });
 
-// Submit a ban appeal
 app.post('/api/ban-appeals', async (req, res) => {
   try {
     const {
@@ -747,11 +683,10 @@ app.post('/api/ban-appeals', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Send to Discord webhook
     if (DISCORD_BAN_APPEALS_WEBHOOK) {
       const embed = {
         title: 'New Ban Appeal',
-        color: 0xFFA500, // Orange
+        color: 0xFFA500,
         fields: [
           { name: 'Player Name', value: playerName, inline: true },
           { name: 'Player GUID', value: `\`${playerGuid}\``, inline: true },
@@ -771,7 +706,6 @@ app.post('/api/ban-appeals', async (req, res) => {
         embed.fields.push({ name: 'Discord', value: discordUsername, inline: true });
       }
 
-      // Appeal reason as its own field
       embed.fields.push({ name: 'Appeal', value: appealReason.slice(0, 1024) });
 
       if (additionalInfo) {
@@ -798,10 +732,6 @@ app.post('/api/ban-appeals', async (req, res) => {
   }
 });
 
-// ========== ADMIN PROXY ROUTES ==========
-// These proxy admin actions to C# Manager APIs (avoids CORS issues)
-
-// Get configured API sources
 function getApiSources() {
   return [
     { id: 'manager1', url: env.MXBIKES_API_URL_1, key: env.MXBIKES_API_KEY_1 },
@@ -809,7 +739,6 @@ function getApiSources() {
   ].filter(s => s.url && s.key);
 }
 
-// Helper to make request to a single manager
 async function fetchFromManager(source, endpoint, method = 'GET', body = null) {
   const url = `${source.url}${endpoint}`;
   const options = {
@@ -836,7 +765,6 @@ async function fetchFromManager(source, endpoint, method = 'GET', body = null) {
   }
 }
 
-// Helper to make requests to first successful manager (for server-specific actions)
 async function proxyToManager(endpoint, method = 'GET', body = null) {
   const sources = getApiSources();
   const errors = [];
@@ -852,7 +780,6 @@ async function proxyToManager(endpoint, method = 'GET', body = null) {
   throw new Error(`All API sources failed: ${errors.join(', ')}`);
 }
 
-// Helper to execute action on ALL managers (for global actions like unban)
 async function proxyToAllManagers(endpoint, method = 'GET', body = null) {
   const sources = getApiSources();
   const results = [];
@@ -870,28 +797,23 @@ async function proxyToAllManagers(endpoint, method = 'GET', body = null) {
   return { results, errors };
 }
 
-// Get ALL bans from BOTH managers, combined and deduplicated
 app.get('/api/admin/bans', async (req, res) => {
   try {
     const sources = getApiSources();
-    const allBansMap = new Map(); // Use playerGuid as key for deduplication
+    const allBansMap = new Map();
     const errors = [];
 
-    // First get all servers from cache
     let serverData = stateManager.getCachedServerData();
     if (!serverData) {
       serverData = await stateManager.fetchServersFromAPI();
     }
     const servers = serverData?.servers || [];
 
-    // Fetch bans from each manager's servers
     await Promise.all(sources.map(async (source) => {
-      // Get servers for this manager
       try {
         const managerServersResp = await fetchFromManager(source, '/servers');
         const managerServers = Array.isArray(managerServersResp) ? managerServersResp : [];
 
-        // Fetch bans from each server on this manager
         for (const server of managerServers) {
           const serverId = server.id || server.Id;
           try {
@@ -901,7 +823,6 @@ app.get('/api/admin/bans', async (req, res) => {
                 const guid = (ban.playerGuid || ban.PlayerGuid || '').toUpperCase();
                 if (!guid) continue;
 
-                // Normalize ban data
                 const normalizedBan = {
                   id: ban.id || ban.Id,
                   playerGuid: guid,
@@ -917,7 +838,6 @@ app.get('/api/admin/bans', async (req, res) => {
                   serverName: server.name || server.Name || 'Unknown Server'
                 };
 
-                // Keep the most recent ban for each player (by bannedAt)
                 const existing = allBansMap.get(guid);
                 if (!existing) {
                   allBansMap.set(guid, normalizedBan);
@@ -925,7 +845,6 @@ app.get('/api/admin/bans', async (req, res) => {
                   const existingDate = new Date(existing.bannedAt || 0);
                   const newDate = new Date(normalizedBan.bannedAt || 0);
                   if (newDate > existingDate) {
-                    // Mark as banned on both managers if we found them on both
                     normalizedBan.onBothManagers = existing.sourceManager !== source.id;
                     allBansMap.set(guid, normalizedBan);
                   } else if (existing.sourceManager !== source.id) {
@@ -935,7 +854,6 @@ app.get('/api/admin/bans', async (req, res) => {
               }
             }
           } catch (banErr) {
-            // Server might not have bans endpoint or be offline
           }
         }
       } catch (err) {
@@ -957,23 +875,19 @@ app.get('/api/admin/bans', async (req, res) => {
   }
 });
 
-// Get bans for a specific server (tries both managers)
 app.get('/api/admin/servers/:serverId/bans', async (req, res) => {
   try {
     const { serverId } = req.params;
     const sources = getApiSources();
 
-    // Try each source until one succeeds
     for (const source of sources) {
       try {
         const bans = await fetchFromManager(source, `/servers/${serverId}/bans`);
         return res.json(bans);
       } catch (err) {
-        // Try next source
       }
     }
 
-    // If no source succeeded, return empty array
     res.json([]);
   } catch (err) {
     console.error('[ADMIN] Get bans error:', err.message);
@@ -981,7 +895,6 @@ app.get('/api/admin/servers/:serverId/bans', async (req, res) => {
   }
 });
 
-// Ban a player on ALL managers (global ban)
 app.post('/api/admin/ban', async (req, res) => {
   try {
     const banData = req.body;
@@ -989,7 +902,6 @@ app.post('/api/admin/ban', async (req, res) => {
     const results = [];
     const errors = [];
 
-    // Get servers from each manager and ban on first available server
     for (const source of sources) {
       try {
         const serversResp = await fetchFromManager(source, '/servers');
@@ -999,7 +911,7 @@ app.post('/api/admin/ban', async (req, res) => {
           const serverId = firstServer.id || firstServer.Id;
           const result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
             ...banData,
-            isGlobal: true // Force global ban
+            isGlobal: true
           });
           results.push({ source: source.id, result });
         }
@@ -1016,7 +928,6 @@ app.post('/api/admin/ban', async (req, res) => {
   }
 });
 
-// Ban a player on a specific server
 app.post('/api/admin/servers/:serverId/ban', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1030,7 +941,6 @@ app.post('/api/admin/servers/:serverId/ban', async (req, res) => {
   }
 });
 
-// Unban a player from ALL managers (global unban)
 app.post('/api/admin/unban', async (req, res) => {
   try {
     const { playerGuid } = req.body;
@@ -1038,13 +948,11 @@ app.post('/api/admin/unban', async (req, res) => {
     const results = [];
     const errors = [];
 
-    // Get servers from each manager and unban on all of them
     for (const source of sources) {
       try {
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
 
-        // Unban on first server (global unbans affect all servers on that manager)
         if (servers.length > 0) {
           const firstServer = servers[0];
           const serverId = firstServer.id || firstServer.Id;
@@ -1073,7 +981,6 @@ app.post('/api/admin/unban', async (req, res) => {
   }
 });
 
-// Unban a player from a specific server
 app.post('/api/admin/servers/:serverId/unban', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1087,7 +994,6 @@ app.post('/api/admin/servers/:serverId/unban', async (req, res) => {
   }
 });
 
-// Kick a player
 app.post('/api/admin/servers/:serverId/kick', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1101,7 +1007,6 @@ app.post('/api/admin/servers/:serverId/kick', async (req, res) => {
   }
 });
 
-// Start server
 app.post('/api/admin/servers/:serverId/start', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1114,7 +1019,6 @@ app.post('/api/admin/servers/:serverId/start', async (req, res) => {
   }
 });
 
-// Stop server
 app.post('/api/admin/servers/:serverId/stop', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1127,7 +1031,6 @@ app.post('/api/admin/servers/:serverId/stop', async (req, res) => {
   }
 });
 
-// Restart server
 app.post('/api/admin/servers/:serverId/restart', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1140,7 +1043,6 @@ app.post('/api/admin/servers/:serverId/restart', async (req, res) => {
   }
 });
 
-// Send public message to server
 app.post('/api/admin/servers/:serverId/message', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1154,7 +1056,6 @@ app.post('/api/admin/servers/:serverId/message', async (req, res) => {
   }
 });
 
-// Update server config
 app.post('/api/admin/servers/:serverId/config', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1168,7 +1069,6 @@ app.post('/api/admin/servers/:serverId/config', async (req, res) => {
   }
 });
 
-// Delete server
 app.delete('/api/admin/servers/:serverId', async (req, res) => {
   try {
     const { serverId } = req.params;
@@ -1181,7 +1081,6 @@ app.delete('/api/admin/servers/:serverId', async (req, res) => {
   }
 });
 
-// Create new server
 app.post('/api/admin/servers', async (req, res) => {
   try {
     const config = req.body;
@@ -1194,11 +1093,9 @@ app.post('/api/admin/servers', async (req, res) => {
   }
 });
 
-// ========== START SERVER ==========
-
-const LEADER_HEARTBEAT_INTERVAL = 5000;  // Send heartbeat every 5 seconds
-const LEADER_STALE_THRESHOLD = 15000;    // Consider leader stale after 15 seconds
-const LEADER_CHECK_INTERVAL = 3000;      // Check for leadership every 3 seconds
+const LEADER_HEARTBEAT_INTERVAL = 5000;
+const LEADER_STALE_THRESHOLD = 15000;
+const LEADER_CHECK_INTERVAL = 3000;
 
 app.listen(PORT, async () => {
   console.log(`[SERVER] MXBikes Stats Server running on port ${PORT}`);
@@ -1207,7 +1104,6 @@ app.listen(PORT, async () => {
   const machineId = process.env.FLY_MACHINE_ID || 'local';
   console.log(`[SERVER] Machine ID: ${machineId}`);
 
-  // Initialize leader election table
   await db.initLeaderTable();
 
   let isLeader = false;
@@ -1215,20 +1111,17 @@ app.listen(PORT, async () => {
   let cycleRunning = false;
   let cycleStartTime = 0;
   let consecutiveSkips = 0;
-  const MAX_CYCLE_TIME = 20000; // Force reset if cycle runs longer than 20s (reduced from 25s)
-  const MAX_CONSECUTIVE_SKIPS = 8; // Force reset after 8 skips (~16 seconds)
+  const MAX_CYCLE_TIME = 20000;
+  const MAX_CONSECUTIVE_SKIPS = 8;
 
-  // Function to start the update loop when becoming leader
   const startUpdateLoop = async () => {
-    if (updateLoopInterval) return; // Already running
+    if (updateLoopInterval) return;
 
     console.log(`[SERVER] ${machineId} starting PRIMARY update loop`);
 
-    // Recover state from database before starting
     await stateManager.recoverStateFromDatabase();
 
     updateLoopInterval = setInterval(async () => {
-      // SAFETY CHECK: Force reset if cycle has been running too long
       if (cycleRunning) {
         const cycleAge = Date.now() - cycleStartTime;
         consecutiveSkips++;
@@ -1236,7 +1129,6 @@ app.listen(PORT, async () => {
         if (cycleAge > MAX_CYCLE_TIME || consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
           console.error(`[UPDATE LOOP] FORCE RESET - cycle stuck for ${cycleAge}ms (${consecutiveSkips} skips)`);
 
-          // Abort the current cycle via its AbortController
           if (stateManager.currentAbortController) {
             console.log('[UPDATE LOOP] Aborting stuck cycle via AbortController');
             stateManager.currentAbortController.abort();
@@ -1244,14 +1136,12 @@ app.listen(PORT, async () => {
 
           cycleRunning = false;
           consecutiveSkips = 0;
-          // Don't return - let it start a new cycle immediately
         } else {
           console.log(`[UPDATE LOOP] Skipping - previous cycle running (${Math.round(cycleAge/1000)}s, skip #${consecutiveSkips})`);
           return;
         }
       }
 
-      // Verify we're still the leader before running
       try {
         const stillLeader = await db.isLeader(machineId);
         if (!stillLeader) {
@@ -1262,7 +1152,6 @@ app.listen(PORT, async () => {
         }
       } catch (err) {
         console.error('[UPDATE LOOP] Leader check failed:', err.message);
-        // Continue anyway - don't stop loop on transient DB errors
       }
 
       cycleRunning = true;
@@ -1276,10 +1165,9 @@ app.listen(PORT, async () => {
       } finally {
         cycleRunning = false;
       }
-    }, 5000); // 5 second interval for responsive live timing
+    }, 5000);
   };
 
-  // Function to stop the update loop when losing leadership
   const stopUpdateLoop = () => {
     if (updateLoopInterval) {
       clearInterval(updateLoopInterval);
@@ -1288,7 +1176,6 @@ app.listen(PORT, async () => {
     }
   };
 
-  // Leader heartbeat - keep leadership alive
   setInterval(async () => {
     if (isLeader) {
       const success = await db.sendLeaderHeartbeat(machineId);
@@ -1298,47 +1185,37 @@ app.listen(PORT, async () => {
     }
   }, LEADER_HEARTBEAT_INTERVAL);
 
-  // Leadership election check - try to become leader if not already
   const checkLeadership = async () => {
     let acquired = false;
     try {
       acquired = await db.tryAcquireLeadership(machineId, LEADER_STALE_THRESHOLD);
     } catch (err) {
       console.error(`[LEADER] Error trying to acquire leadership:`, err.message);
-      // Continue with acquired = false, will retry on next interval
       return;
     }
 
     if (acquired && !isLeader) {
-      // Just became the leader
       isLeader = true;
       console.log(`[SERVER] ${machineId} is now the PRIMARY leader`);
       await startUpdateLoop();
     } else if (!acquired && isLeader) {
-      // Lost leadership
       isLeader = false;
       console.log(`[SERVER] ${machineId} lost leadership, becoming SECONDARY`);
       stopUpdateLoop();
     } else if (!acquired && !isLeader) {
-      // Still not the leader
-      // Only log occasionally to avoid spam
     }
   };
 
-  // Initial leadership check
   await checkLeadership();
 
-  // Periodic leadership check (for failover)
   setInterval(checkLeadership, LEADER_CHECK_INTERVAL);
 
-  // Log initial state
   if (isLeader) {
     console.log(`[SERVER] ${machineId} started as PRIMARY leader`);
   } else {
     console.log(`[SERVER] ${machineId} started as SECONDARY (API only)`);
   }
 
-  // Graceful shutdown - release leadership
   const gracefulShutdown = async () => {
     console.log(`[SERVER] ${machineId} shutting down...`);
     if (isLeader) {

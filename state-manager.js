@@ -1,6 +1,3 @@
-// State Manager - Replaces Cloudflare Durable Object
-// Uses in-memory Maps/Sets with the same logic
-
 import { setMaxListeners } from 'events';
 
 export class StateManager {
@@ -8,20 +5,17 @@ export class StateManager {
     this.db = db;
     this.env = env;
 
-    // In-memory state (same as Durable Object)
     this.previousServerStates = new Map();
     this.serverSessions = new Map();
     this.serverSessionPhases = new Map();
     this.mmrSentSessions = new Set();
     this.serverToApiMap = new Map();
 
-    // Write optimization caches
     this.cachedPlayerStates = new Map();
     this.insertedHoleshots = new Map();
     this.insertedContacts = new Map();
     this.cachedWarmupStates = new Map();
 
-    // Server ID -> Track name mapping for PB lookups
     this.serverTracks = new Map();
 
     this.LASTSEEN_UPDATE_INTERVAL = 60000;
@@ -30,7 +24,6 @@ export class StateManager {
     this.alarmCounter = 0;
   }
 
-  // Recover state from database on startup (handles Fly.io restarts)
   async recoverStateFromDatabase() {
     try {
       const activeSessions = await this.db.getActiveSessions();
@@ -41,20 +34,16 @@ export class StateManager {
       }
 
       for (const session of activeSessions) {
-        // Rebuild serverSessions map
         this.serverSessions.set(session.serverId, session.id);
 
-        // Rebuild serverSessionPhases map
         if (session.currentSessionPhase) {
           this.serverSessionPhases.set(session.serverId, session.currentSessionPhase);
         }
 
-        // Rebuild previousServerStates map
         if (session.sessionState) {
           this.previousServerStates.set(session.serverId, session.sessionState);
         }
 
-        // If raceResults exist, MMR was already sent - add to mmrSentSessions
         if (session.raceResults && session.raceResults.length > 0) {
           this.mmrSentSessions.add(session.id);
         }
@@ -63,42 +52,35 @@ export class StateManager {
       console.log(`[RECOVERY] Recovered ${activeSessions.length} active sessions, ${this.mmrSentSessions.size} with MMR already sent`);
     } catch (err) {
       console.error('[RECOVERY] Error recovering state:', err.message);
-      // Non-fatal - continue without recovery
     }
   }
 
-  // Get track name for a server ID (used by PB endpoint)
   getTrackForServer(serverId) {
     return this.serverTracks.get(serverId) || null;
   }
 
-  // Main update loop (replaces Durable Object alarm)
   async runUpdateCycle() {
     this.alarmCounter++;
     const cycleId = this.alarmCounter;
     const cycleStart = Date.now();
 
-    // Track active cycle to detect overlaps
     if (this.activeCycleId && this.activeCycleId !== cycleId) {
       console.warn(`[Update] Cycle #${cycleId} starting while #${this.activeCycleId} still active - overlap detected!`);
     }
     this.activeCycleId = cycleId;
 
-    // Use AbortController for proper cancellation
     const abortController = new AbortController();
-    this.currentAbortController = abortController; // Store for external access
+    this.currentAbortController = abortController;
 
-    // Increase max listeners to prevent warnings with many parallel fetches
     try {
       setMaxListeners(50, abortController.signal);
     } catch (e) {
-      // Ignore if setMaxListeners doesn't work (shouldn't happen in Node)
     }
 
     const timeoutId = setTimeout(() => {
       console.error(`[Update] TIMEOUT after 30s - aborting cycle #${cycleId}`);
       abortController.abort();
-    }, 30000); // 30 second timeout (increased to allow database operations to complete)
+    }, 30000);
 
     try {
       await this._runUpdateCycleInternal(abortController.signal, cycleId);
@@ -118,7 +100,6 @@ export class StateManager {
   }
 
   async _runUpdateCycleInternal(abortSignal, cycleId) {
-    // Helper to check abort and throw if needed
     const checkAbort = () => {
       if (abortSignal?.aborted) {
         throw new DOMException('Aborted', 'AbortError');
@@ -139,7 +120,6 @@ export class StateManager {
       const { onlinePlayers } = serverData;
       const now = Date.now();
 
-      // Update players (only when changed) - CHUNKED to allow abort between chunks
       if (onlinePlayers && onlinePlayers.length > 0) {
         const playersToUpdate = [];
 
@@ -184,11 +164,10 @@ export class StateManager {
           }
         }
 
-        // Process in chunks of 25 to allow abort checks between database calls
         const CHUNK_SIZE = 25;
         let totalUpdated = 0;
         for (let i = 0; i < playersToUpdate.length; i += CHUNK_SIZE) {
-          checkAbort(); // Check abort BEFORE each chunk
+          checkAbort();
           const chunk = playersToUpdate.slice(i, i + CHUNK_SIZE);
           await this.db.batchUpsertPlayers(chunk);
           totalUpdated += chunk.length;
@@ -200,18 +179,16 @@ export class StateManager {
 
       checkAbort();
 
-      // Process session updates (pass abort signal through)
       await this.processServerUpdates(serverData, abortSignal);
 
       console.log(`[Cycle #${cycleId}] ${serverData.servers.length} servers, ${this.serverSessions.size} sessions, ${onlinePlayers?.length || 0} online`);
     } catch (error) {
-      if (error.name === 'AbortError') throw error; // Re-throw abort errors
+      if (error.name === 'AbortError') throw error;
       console.error('[Update] Internal error:', error.message);
     }
   }
 
   async fetchServersFromAPI(abortSignal) {
-    // Helper to add timeout to any promise
     const withTimeout = (promise, timeoutMs, fallback = null) => {
       return Promise.race([
         promise,
@@ -221,18 +198,13 @@ export class StateManager {
       ]);
     };
 
-    // Helper to fetch with timeout (including json parsing)
-    // Links to parent abortSignal so parent timeout kills child fetches
     const fetchJsonWithTimeout = async (url, options, timeoutMs = 5000) => {
       try {
-        // Check parent abort signal before starting
         if (abortSignal?.aborted) return null;
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-        // Link to parent - if parent aborts, abort this fetch too
-        // Use { once: true } to auto-cleanup listener
         let abortHandler = null;
         if (abortSignal) {
           abortHandler = () => controller.abort();
@@ -245,18 +217,15 @@ export class StateManager {
 
           if (!response.ok) return null;
 
-          // Also timeout the json parsing
           const json = await withTimeout(response.json(), 3000, null);
           return json;
         } finally {
-          // Clean up resources
           clearTimeout(timeoutId);
           if (abortSignal && abortHandler && !abortSignal.aborted) {
             abortSignal.removeEventListener('abort', abortHandler);
           }
         }
       } catch (err) {
-        // Check if this was due to parent abort
         if (abortSignal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');
         }
@@ -267,13 +236,12 @@ export class StateManager {
     const [servers1, servers2] = await Promise.all([
       fetchJsonWithTimeout(`${this.env.MXBIKES_API_URL_1}/servers`, {
         headers: { 'X-API-Key': this.env.MXBIKES_API_KEY_1 },
-      }, 10000), // Increased from 3s to 10s to handle network latency
+      }, 10000),
       fetchJsonWithTimeout(`${this.env.MXBIKES_API_URL_2}/servers`, {
         headers: { 'X-API-Key': this.env.MXBIKES_API_KEY_2 },
-      }, 10000), // Increased from 3s to 10s to handle network latency
+      }, 10000),
     ]);
 
-    // Deduplicate servers by ID (same server might appear in both APIs)
     const serverMap = new Map();
     let api1Count = 0, api2Count = 0, duplicateCount = 0;
     (servers1 || []).forEach(s => {
@@ -290,12 +258,10 @@ export class StateManager {
     });
     const allServers = Array.from(serverMap.values()).map(v => v.server);
 
-    // Log only occasionally (every 50 cycles) to reduce spam
     if (this.alarmCounter % 50 === 1) {
       console.log(`[API-SOURCES] API1: ${api1Count}, API2: ${api2Count}, Duplicates: ${duplicateCount}, Total: ${allServers.length}`);
     }
 
-    // Fetch detailed server info with proper timeouts
     const detailedPromises = allServers.map(server => {
       const apiSource = serverMap.get(server.id)?.source || 1;
       const apiUrl = apiSource === 1 ? this.env.MXBIKES_API_URL_1 : this.env.MXBIKES_API_URL_2;
@@ -321,7 +287,6 @@ export class StateManager {
       return server;
     });
 
-    // Update server ID -> track name mapping for PB lookups
     servers.forEach(server => {
       const trackName = server.session?.track_name || '';
       if (server.id && trackName) {
@@ -368,7 +333,6 @@ export class StateManager {
   async processServerUpdates(serverData, abortSignal) {
     const { servers } = serverData;
 
-    // Helper to check abort
     const checkAbort = () => {
       if (abortSignal?.aborted) {
         throw new DOMException('Aborted', 'AbortError');
@@ -412,7 +376,6 @@ export class StateManager {
               };
             });
 
-          // Check if warmup results changed
           let hasChanges = false;
           const cachedWarmup = this.cachedWarmupStates.get(sessionId);
 
@@ -445,7 +408,6 @@ export class StateManager {
             this.cachedWarmupStates.set(sessionId, newCache);
           }
 
-          // Collect contacts
           for (const rider of riders) {
             if (rider.contacts && rider.contacts.length > 0) {
               if (!this.insertedContacts.has(sessionId)) {
@@ -472,7 +434,6 @@ export class StateManager {
               }
             }
 
-            // Collect holeshots
             if (rider.holeshot_time && rider.holeshot_time > 0) {
               if (!this.insertedHoleshots.has(sessionId)) {
                 this.insertedHoleshots.set(sessionId, new Set());
@@ -497,22 +458,18 @@ export class StateManager {
       }
     }
 
-    // Batch updates (check abort before each) - CHUNKED for quick abort
     const BATCH_CHUNK = 10;
 
-    // Warmup updates in chunks
     for (let i = 0; i < warmupUpdates.length; i += BATCH_CHUNK) {
       checkAbort();
       await this.db.batchUpdateSessions(warmupUpdates.slice(i, i + BATCH_CHUNK));
     }
 
-    // Contacts in chunks
     for (let i = 0; i < contactsToInsert.length; i += BATCH_CHUNK) {
       checkAbort();
       await this.db.batchInsertContacts(contactsToInsert.slice(i, i + BATCH_CHUNK));
     }
 
-    // Holeshots in chunks
     for (let i = 0; i < holeshotsToInsert.length; i += BATCH_CHUNK) {
       checkAbort();
       await this.db.batchInsertHoleshots(holeshotsToInsert.slice(i, i + BATCH_CHUNK));
@@ -520,13 +477,10 @@ export class StateManager {
 
     checkAbort();
 
-    // Handle state changes
     const processedServers = new Set();
     for (const server of servers) {
-      // Check abort before each server to allow quick exit
       checkAbort();
 
-      // Check for duplicate servers in same cycle
       if (processedServers.has(server.id)) {
         console.log(`[DUPLICATE] Server ${server.name} (${server.id}) appears multiple times in servers array!`);
         continue;
@@ -547,7 +501,6 @@ export class StateManager {
   }
 
   async handleSessionStateChange(server, previousState, currentState, previousPhase, currentPhase, abortSignal) {
-    // Helper to check abort
     const checkAbort = () => {
       if (abortSignal?.aborted) {
         throw new DOMException('Aborted', 'AbortError');
@@ -561,13 +514,11 @@ export class StateManager {
 
     console.log(`[STATE] ${server.name}: ${previousPhase}(${previousState}) -> ${currentPhase}(${currentState})`);
 
-    // Create new session
     if (currentState === 'INPROGRESS' && previousState !== 'INPROGRESS' && !this.serverSessions.has(server.id)) {
       checkAbort();
       const sessionId = `${server.id}_${Date.now()}`;
       const session = server.session || {};
 
-      // Set in Map IMMEDIATELY to prevent race condition with overlapping cycles
       this.serverSessions.set(server.id, sessionId);
       this.serverSessionPhases.set(server.id, currentPhase);
 
@@ -589,7 +540,6 @@ export class StateManager {
       return;
     }
 
-    // Phase change: warmup -> race
     if (wasWarmup && isRace) {
       checkAbort();
       const sessionId = this.serverSessions.get(server.id);
@@ -601,7 +551,6 @@ export class StateManager {
       return;
     }
 
-    // RACEOVER - Send MMR (CRITICAL - must complete even if cycle times out)
     if (currentState === 'RACEOVER' && isRace) {
       const sessionId = this.serverSessions.get(server.id);
       const apiSource = this.serverToApiMap.get(server.id) || 'unknown';
@@ -612,24 +561,16 @@ export class StateManager {
         return;
       }
 
-      // Mark as sent IMMEDIATELY to prevent race condition with next cycle
       this.mmrSentSessions.add(sessionId);
       console.log(`[RACEOVER-PROCESS] Processing MMR for session ${sessionId}`);
 
-      // Queue critical MMR operation to run even if main cycle times out
       this._processRaceOverAsync(server, sessionId).catch(err => {
         console.error(`[RACEOVER-ASYNC] Error processing ${sessionId}:`, err.message);
-        // Remove from sent so it can retry next cycle
         this.mmrSentSessions.delete(sessionId);
       });
-      return; // Don't await - let it run independently
+      return;
     }
 
-    // Finalize session
-    // Handle various end-of-race scenarios:
-    // - race(COMPLETE) -> anything
-    // - race(anything) -> WAITING or UNKNOWN
-    // - race -> warmup (new session starting)
     const isCurrentUnknown = currentState === 'UNKNOWN' || currentState === '--' || !currentState;
     const isWaiting = currentState === 'WAITING' || (isCurrentUnknown && !currentPhase);
 
@@ -654,7 +595,6 @@ export class StateManager {
         endTime: Date.now()
       });
 
-      // Cleanup
       this.serverSessions.delete(server.id);
       this.serverSessionPhases.delete(server.id);
       this.mmrSentSessions.delete(sessionId);
@@ -664,13 +604,11 @@ export class StateManager {
 
       console.log(`[FINALIZE] ${sessionId} - raceFinalized: ${hasRaceResults}`);
 
-      // Create new warmup session if transitioning
       if (wasRace && isWarmup && currentState === 'INPROGRESS') {
         checkAbort();
         const newSessionId = `${server.id}_${Date.now()}`;
         const session = server.session || {};
 
-        // Set in Map IMMEDIATELY to prevent race condition
         this.serverSessions.set(server.id, newSessionId);
         this.serverSessionPhases.set(server.id, currentPhase);
 
@@ -687,7 +625,6 @@ export class StateManager {
       return;
     }
 
-    // Finalize warmup-only
     if (currentState === 'WAITING' && (previousState === 'COMPLETE' || previousState === 'INPROGRESS')) {
       checkAbort();
       const sessionId = this.serverSessions.get(server.id);
@@ -708,7 +645,6 @@ export class StateManager {
     }
   }
 
-  // Separate async function for RACEOVER processing - won't be killed by cycle timeout
   async _processRaceOverAsync(server, sessionId) {
     const riders = server.riders || [];
     if (riders.length === 0) return;
@@ -732,12 +668,10 @@ export class StateManager {
             holeshotTime: r.holeshot_time || null
           }));
 
-        // Calculate and apply MMR
         const mmrChanges = this.db.calculateMMRChanges(raceResults);
         console.log(`[RACEOVER-DB] Applying MMR to database for ${mmrChanges.length} players, session: ${sessionId}`);
         await this.db.batchUpdatePlayerMMR(mmrChanges);
 
-        // Get updated player data
         const guids = raceResults.map(r => r.playerGuid);
         const updatedPlayers = await this.db.getBatchPlayers(guids);
 
@@ -752,7 +686,6 @@ export class StateManager {
           };
         });
 
-        // Save to player_sessions
         const playerSessions = mmrChanges.map(change => {
           const result = raceResults.find(r => r.playerGuid === change.playerGuid);
           return {
@@ -772,14 +705,13 @@ export class StateManager {
           totalEntries: raceResultsWithMMR.length
         });
 
-        // Send MMR to Manager API
         await this.sendMMRToManagerAPI(server, raceResultsWithMMR);
 
         console.log(`[RACEOVER] ${sessionId}: Winner ${raceResults[0]?.playerName}`);
       }
     } catch (err) {
       console.error(`[RACEOVER] Error:`, err.message);
-      throw err; // Re-throw so caller can handle retry
+      throw err;
     }
   }
 
@@ -798,7 +730,6 @@ export class StateManager {
 
     console.log(`[MMR] Sending ${mmrUpdates.length} updates to API ${apiOrigin} for server ${server.id}`);
 
-    // Helper to add timeout to fetch requests
     const fetchWithTimeout = (url, options, timeoutMs = 5000) => {
       return Promise.race([
         fetch(url, options),
@@ -822,7 +753,6 @@ export class StateManager {
         const result = await response.json();
         console.log(`[MMR] Success: ${result.messagesSent}/${result.totalPlayers} delivered`);
       } else {
-        // Try alternate API
         apiUrl = apiOrigin === 1 ? this.env.MXBIKES_API_URL_2 : this.env.MXBIKES_API_URL_1;
         apiKey = apiOrigin === 1 ? this.env.MXBIKES_API_KEY_2 : this.env.MXBIKES_API_KEY_1;
 
