@@ -122,6 +122,30 @@ app.get('/', (req, res) => {
   res.send('MXBikes Stats Server v3 - Fly.io Edition');
 });
 
+app.get('/api/bulk', async (req, res) => {
+  try {
+    const [players, sessions, servers, leaderboardMMR, leaderboardSR, records, stats] = await Promise.all([
+      db.getAllPlayers(),
+      db.getRecentSessions(50),
+      Promise.resolve(stateManager.getCachedServerData()),
+      db.getLeaderboard('mmr', 100),
+      db.getLeaderboard('safetyRating', 100),
+      db.getGlobalRecords(50),
+      db.getTotalFinalizedSessionsCount().then(count => ({ totalRaces: count }))
+    ]);
+    res.json({
+      players,
+      sessions,
+      servers,
+      leaderboards: { mmr: leaderboardMMR, sr: leaderboardSR },
+      records,
+      stats
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/players', async (req, res) => {
   try {
     const players = await db.getAllPlayers();
