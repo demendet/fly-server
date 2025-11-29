@@ -1,0 +1,45 @@
+# fly.toml app configuration file generated for mxbikes-stats-server on 2025-11-27T15:55:56+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'mxbikes-stats-server'
+primary_region = 'ams'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  FIREBASE_API_URL = 'https://mxbikes-13bcf.firebaseio.com'
+  FIREBASE_CLIENT_EMAIL = 'firebase-adminsdk-fbsvc@mxbikes-13bcf.iam.gserviceaccount.com'
+  FIREBASE_PROJECT_ID = 'mxbikes-13bcf'
+  MXBIKES_API_URL_1 = 'https://api1.cbrservers.com'
+  MXBIKES_API_URL_2 = 'https://api2.cbrservers.com'
+  NODE_ENV = 'production'
+  PORT = '8080'
+  TURSO_URL = 'libsql://cbrservers-demendet.aws-eu-west-1.turso.io'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+  [http_service.concurrency]
+    type = 'requests'
+    hard_limit = 250
+    soft_limit = 200
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
+
+[[vm]]
+memory = "1gb"
+cpus = 2
+count = 3
