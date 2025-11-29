@@ -128,9 +128,9 @@ app.get('/api/bulk', async (req, res) => {
       db.getAllPlayers(),
       db.getRecentSessions(50),
       Promise.resolve(stateManager.getCachedServerData()),
-      db.getLeaderboard('mmr', 100),
-      db.getLeaderboard('safetyRating', 100),
-      db.getGlobalRecords(50),
+      db.getTopPlayersByMMR(100),
+      db.getTopPlayersBySR(100),
+      db.getAllTrackRecords(),
       db.getTotalFinalizedSessionsCount().then(count => ({ totalRaces: count }))
     ]);
     res.json({
