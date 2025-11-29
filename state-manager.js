@@ -324,10 +324,7 @@ export class StateManager {
   }
 
   getCachedServerData() {
-    if (this.cachedServerData && (Date.now() - this.lastServerDataFetch) < 5000) {
-      return this.cachedServerData;
-    }
-    return null;
+    return this.cachedServerData;
   }
 
   async processServerUpdates(serverData, abortSignal) {
