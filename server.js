@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import admin from 'firebase-admin';
 import { PostgresDatabaseManager } from './database-postgres.js';
@@ -100,6 +101,7 @@ try {
 }
 
 const allowedOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'];
+app.use(compression());
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
