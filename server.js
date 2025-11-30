@@ -5,7 +5,6 @@ import cors from 'cors';
 import admin from 'firebase-admin';
 import { PostgresDatabaseManager } from './database-postgres.js';
 import { StateManager } from './state-manager.js';
-// hehe
 let firebaseAdmin = null;
 try {
   const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -21,6 +20,117 @@ try {
   }
 } catch (err) {
   console.error('[INIT] Firebase Admin SDK initialization failed:', err.message);
+}
+
+const ADMIN_ROLES = ['admin', 'superadmin'];
+const MODERATOR_ROLES = ['moderator', 'admin', 'superadmin'];
+
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid authorization header' });
+  }
+
+  if (!firebaseAdmin) {
+    return res.status(503).json({ error: 'Authentication service unavailable' });
+  }
+
+  const token = authHeader.split('Bearer ')[1];
+  try {
+    const decoded = await firebaseAdmin.auth().verifyIdToken(token);
+    req.user = decoded;
+    req.userId = decoded.uid;
+    next();
+  } catch (err) {
+    console.error('[AUTH] Token verification failed:', err.message);
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+}
+
+async function requireRole(allowedRoles) {
+  return async (req, res, next) => {
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    try {
+      const userDoc = await firebaseAdmin.firestore().collection('users').doc(req.userId).get();
+      if (!userDoc.exists) {
+        return res.status(403).json({ error: 'User profile not found' });
+      }
+
+      const userData = userDoc.data();
+      const userRole = userData.role || 'user';
+
+      if (!allowedRoles.includes(userRole)) {
+        console.log(`[AUTH] Access denied for ${req.userId} (role: ${userRole}, required: ${allowedRoles.join('/')})`);
+        return res.status(403).json({ error: 'Insufficient permissions' });
+      }
+
+      req.userRole = userRole;
+      req.userProfile = userData;
+      next();
+    } catch (err) {
+      console.error('[AUTH] Role check failed:', err.message);
+      return res.status(500).json({ error: 'Failed to verify permissions' });
+    }
+  };
+}
+
+async function requireAdmin(req, res, next) {
+  if (!req.userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  try {
+    const userDoc = await firebaseAdmin.firestore().collection('users').doc(req.userId).get();
+    if (!userDoc.exists) {
+      return res.status(403).json({ error: 'User profile not found' });
+    }
+
+    const userData = userDoc.data();
+    const userRole = userData.role || 'user';
+
+    if (!ADMIN_ROLES.includes(userRole)) {
+      console.log(`[AUTH] Admin access denied for ${req.userId} (role: ${userRole})`);
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    req.userRole = userRole;
+    req.userProfile = userData;
+    next();
+  } catch (err) {
+    console.error('[AUTH] Admin check failed:', err.message);
+    return res.status(500).json({ error: 'Failed to verify permissions' });
+  }
+}
+
+async function requireModerator(req, res, next) {
+  if (!req.userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  try {
+    const userDoc = await firebaseAdmin.firestore().collection('users').doc(req.userId).get();
+    if (!userDoc.exists) {
+      return res.status(403).json({ error: 'User profile not found' });
+    }
+
+    const userData = userDoc.data();
+    const userRole = userData.role || 'user';
+
+    if (!MODERATOR_ROLES.includes(userRole)) {
+      console.log(`[AUTH] Moderator access denied for ${req.userId} (role: ${userRole})`);
+      return res.status(403).json({ error: 'Moderator access required' });
+    }
+
+    req.userRole = userRole;
+    req.userProfile = userData;
+    next();
+  } catch (err) {
+    console.error('[AUTH] Moderator check failed:', err.message);
+    return res.status(500).json({ error: 'Failed to verify permissions' });
+  }
 }
 
 const app = express();
@@ -111,7 +221,7 @@ app.use(cors({
     }
   },
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type']
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
@@ -885,7 +995,7 @@ app.get('/api/player/:guid/ban-status', async (req, res) => {
   }
 });
 
-app.get('/api/admin/bans', async (req, res) => {
+app.get('/api/admin/bans', requireAuth, requireModerator, async (req, res) => {
   try {
     const sources = getApiSources();
     const allBansMap = new Map();
@@ -963,7 +1073,7 @@ app.get('/api/admin/bans', async (req, res) => {
   }
 });
 
-app.get('/api/admin/servers/:serverId/bans', async (req, res) => {
+app.get('/api/admin/servers/:serverId/bans', requireAuth, requireModerator, async (req, res) => {
   try {
     const { serverId } = req.params;
     const sources = getApiSources();
@@ -983,7 +1093,7 @@ app.get('/api/admin/servers/:serverId/bans', async (req, res) => {
   }
 });
 
-app.post('/api/admin/ban', async (req, res) => {
+app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
   try {
     const banData = req.body;
     const sources = getApiSources();
@@ -1016,7 +1126,7 @@ app.post('/api/admin/ban', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers/:serverId/ban', async (req, res) => {
+app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
     const banData = req.body;
@@ -1029,7 +1139,7 @@ app.post('/api/admin/servers/:serverId/ban', async (req, res) => {
   }
 });
 
-app.post('/api/admin/unban', async (req, res) => {
+app.post('/api/admin/unban', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { playerGuid } = req.body;
     const sources = getApiSources();
@@ -1069,7 +1179,7 @@ app.post('/api/admin/unban', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers/:serverId/unban', async (req, res) => {
+app.post('/api/admin/servers/:serverId/unban', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
     const { playerGuid } = req.body;
@@ -1082,7 +1192,7 @@ app.post('/api/admin/servers/:serverId/unban', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers/:serverId/kick', async (req, res) => {
+app.post('/api/admin/servers/:serverId/kick', requireAuth, requireModerator, async (req, res) => {
   try {
     const { serverId } = req.params;
     const { playerGuid } = req.body;
@@ -1095,7 +1205,7 @@ app.post('/api/admin/servers/:serverId/kick', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers/:serverId/start', async (req, res) => {
+app.post('/api/admin/servers/:serverId/start', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
     const result = await proxyToManager(`/servers/${serverId}/start`, 'POST');
@@ -1107,7 +1217,7 @@ app.post('/api/admin/servers/:serverId/start', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers/:serverId/stop', async (req, res) => {
+app.post('/api/admin/servers/:serverId/stop', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
     const result = await proxyToManager(`/servers/${serverId}/stop`, 'POST');
@@ -1119,7 +1229,7 @@ app.post('/api/admin/servers/:serverId/stop', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers/:serverId/restart', async (req, res) => {
+app.post('/api/admin/servers/:serverId/restart', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
     const result = await proxyToManager(`/servers/${serverId}/restart`, 'POST');
@@ -1131,7 +1241,7 @@ app.post('/api/admin/servers/:serverId/restart', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers/:serverId/message', async (req, res) => {
+app.post('/api/admin/servers/:serverId/message', requireAuth, requireModerator, async (req, res) => {
   try {
     const { serverId } = req.params;
     const { message } = req.body;
@@ -1144,7 +1254,7 @@ app.post('/api/admin/servers/:serverId/message', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers/:serverId/config', async (req, res) => {
+app.post('/api/admin/servers/:serverId/config', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
     const config = req.body;
@@ -1157,7 +1267,7 @@ app.post('/api/admin/servers/:serverId/config', async (req, res) => {
   }
 });
 
-app.delete('/api/admin/servers/:serverId', async (req, res) => {
+app.delete('/api/admin/servers/:serverId', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
     const result = await proxyToManager(`/servers/${serverId}`, 'DELETE');
@@ -1169,7 +1279,7 @@ app.delete('/api/admin/servers/:serverId', async (req, res) => {
   }
 });
 
-app.post('/api/admin/servers', async (req, res) => {
+app.post('/api/admin/servers', requireAuth, requireAdmin, async (req, res) => {
   try {
     const config = req.body;
     const result = await proxyToManager('/servers', 'POST', config);
