@@ -524,6 +524,7 @@ export class PostgresDatabaseManager {
       totalRaces: row.totalRaces,
       wins: row.wins,
       podiums: row.podiums,
+      holeshots: row.holeshots || 0,
       raceNumber: row.raceNumber,
       bikeName: row.bikeName,
       currentServer: row.currentServer,
