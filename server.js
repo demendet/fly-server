@@ -5,7 +5,7 @@ import cors from 'cors';
 import admin from 'firebase-admin';
 import { PostgresDatabaseManager } from './database-postgres.js';
 import { StateManager } from './state-manager.js';
-
+// hehe
 let firebaseAdmin = null;
 try {
   const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -822,6 +822,68 @@ async function proxyToAllManagers(endpoint, method = 'GET', body = null) {
 
   return { results, errors };
 }
+
+// Public endpoint to check if a player is banned (for profile display)
+app.get('/api/player/:guid/ban-status', async (req, res) => {
+  try {
+    const { guid } = req.params;
+    const upperGuid = guid.toUpperCase();
+    const sources = getApiSources();
+    let banInfo = null;
+
+    let serverData = stateManager.getCachedServerData();
+    if (!serverData) {
+      serverData = await stateManager.fetchServersFromAPI();
+    }
+
+    // Check all managers for this player's ban
+    for (const source of sources) {
+      try {
+        const managerServersResp = await fetchFromManager(source, '/servers');
+        const managerServers = Array.isArray(managerServersResp) ? managerServersResp : [];
+
+        for (const server of managerServers) {
+          const serverId = server.id || server.Id;
+          try {
+            const bans = await fetchFromManager(source, `/servers/${serverId}/bans`);
+            if (Array.isArray(bans)) {
+              const playerBan = bans.find(ban => {
+                const banGuid = (ban.playerGuid || ban.PlayerGuid || '').toUpperCase();
+                return banGuid === upperGuid;
+              });
+
+              if (playerBan) {
+                banInfo = {
+                  isBanned: true,
+                  playerGuid: upperGuid,
+                  playerName: playerBan.playerName || playerBan.PlayerName || 'Unknown',
+                  reason: playerBan.reason || playerBan.Reason || 'No reason provided',
+                  bannedAt: playerBan.bannedAt || playerBan.BannedAt,
+                  expiresAt: playerBan.expiresAt || playerBan.ExpiresAt || null,
+                  bannedBy: playerBan.bannedBy || playerBan.BannedBy || 'Admin',
+                  durationDescription: playerBan.durationDescription || playerBan.DurationDescription || null,
+                  isActive: playerBan.isActive ?? playerBan.IsActive ?? true
+                };
+                // Found ban, no need to continue
+                break;
+              }
+            }
+          } catch (banErr) {
+            // Ignore individual server errors
+          }
+        }
+        if (banInfo) break;
+      } catch (err) {
+        // Ignore manager errors
+      }
+    }
+
+    res.json(banInfo || { isBanned: false });
+  } catch (err) {
+    console.error('[BAN-CHECK] Error:', err.message);
+    res.json({ isBanned: false });
+  }
+});
 
 app.get('/api/admin/bans', async (req, res) => {
   try {
