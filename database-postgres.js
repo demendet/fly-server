@@ -669,6 +669,11 @@ export class PostgresDatabaseManager {
     return result.rows.map(row => this.rowToSession(row));
   }
 
+  async getSession(sessionId) {
+    const result = await this.pool.query('SELECT * FROM sessions WHERE id = $1', [sessionId]);
+    return result.rows.length > 0 ? this.rowToSession(result.rows[0]) : null;
+  }
+
   async getActiveSessions() {
     const result = await this.pool.query(`
       SELECT * FROM sessions WHERE "isActive" = TRUE AND "hasFinished" = FALSE

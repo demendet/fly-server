@@ -277,6 +277,19 @@ app.get('/api/sessions', async (req, res) => {
   }
 });
 
+app.get('/api/session/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const session = await db.getSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    res.json(session);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
   try {
     const { secretKey } = req.body;
