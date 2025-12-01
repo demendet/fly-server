@@ -837,14 +837,17 @@ function setCachedSteamAvatar(guid, data) {
 // Fetches and caches Steam avatars in database
 // ==========================================
 let lastAvatarSyncTime = 0;
-const AVATAR_SYNC_INTERVAL = 60000; // Run every 60 seconds
-const AVATAR_BATCH_SIZE = 50; // Steam API allows up to 100
+const AVATAR_SYNC_INTERVAL = 5000; // Run every 5 seconds for fast initial sync
+const AVATAR_BATCH_SIZE = 100; // Steam API allows up to 100 per request
 
 async function syncSteamAvatars() {
   try {
     // Get players needing avatar sync
     const guidsToSync = await db.getPlayersNeedingAvatarSync(AVATAR_BATCH_SIZE);
-    if (guidsToSync.length === 0) return;
+    if (guidsToSync.length === 0) {
+      // All synced - slow down interval (checked in the caller)
+      return { done: true };
+    }
 
     console.log(`[AVATAR SYNC] Syncing ${guidsToSync.length} player avatars...`);
 
@@ -894,6 +897,49 @@ async function syncSteamAvatars() {
   } catch (err) {
     console.error('[AVATAR SYNC] Error:', err.message);
   }
+}
+
+// Fast avatar sync loop - runs every 2 seconds until all avatars are synced
+// Then slows down to every 30 seconds to catch new players
+let avatarSyncInterval = null;
+let avatarSyncSlowMode = false;
+
+function startAvatarSyncLoop() {
+  if (avatarSyncInterval) return; // Already running
+
+  console.log('[AVATAR SYNC] Starting fast sync loop...');
+  let consecutiveEmpty = 0;
+  avatarSyncSlowMode = false;
+
+  const runSync = async () => {
+    try {
+      const result = await syncSteamAvatars();
+      if (result?.done) {
+        consecutiveEmpty++;
+        if (consecutiveEmpty >= 3 && !avatarSyncSlowMode) {
+          // All synced - switch to slow mode
+          console.log('[AVATAR SYNC] Initial sync complete, switching to slow mode (30s)');
+          avatarSyncSlowMode = true;
+          clearInterval(avatarSyncInterval);
+          avatarSyncInterval = setInterval(runSync, 30000); // Every 30 seconds
+        }
+      } else {
+        consecutiveEmpty = 0;
+        // If we were in slow mode and found work, speed up again
+        if (avatarSyncSlowMode) {
+          console.log('[AVATAR SYNC] Found new players, switching to fast mode');
+          avatarSyncSlowMode = false;
+          clearInterval(avatarSyncInterval);
+          avatarSyncInterval = setInterval(runSync, 2000);
+        }
+      }
+    } catch (err) {
+      console.error('[AVATAR SYNC] Loop error:', err.message);
+    }
+  };
+
+  avatarSyncInterval = setInterval(runSync, 2000); // Start fast (every 2 seconds)
+  runSync(); // Run immediately
 }
 
 app.post('/api/steam/avatars', async (req, res) => {
@@ -2416,16 +2462,7 @@ app.listen(PORT, async () => {
 
       try {
         await stateManager.runUpdateCycle();
-
-        // Run Steam avatar sync every AVATAR_SYNC_INTERVAL (60s)
-        const now = Date.now();
-        if (now - lastAvatarSyncTime >= AVATAR_SYNC_INTERVAL) {
-          lastAvatarSyncTime = now;
-          // Run async - don't block update loop
-          syncSteamAvatars().catch(err => {
-            console.error('[AVATAR SYNC] Background error:', err.message);
-          });
-        }
+        // Avatar sync handled by dedicated startAvatarSyncLoop()
       } catch (err) {
         console.error('[UPDATE LOOP] Error:', err.message);
       } finally {
@@ -2464,6 +2501,9 @@ app.listen(PORT, async () => {
       isLeader = true;
       console.log(`[SERVER] ${machineId} is now the PRIMARY leader`);
       await startUpdateLoop();
+
+      // Start fast avatar sync loop (runs until all avatars are synced)
+      startAvatarSyncLoop();
     } else if (!acquired && isLeader) {
       isLeader = false;
       console.log(`[SERVER] ${machineId} lost leadership, becoming SECONDARY`);
