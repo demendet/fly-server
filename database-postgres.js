@@ -275,8 +275,47 @@ export class PostgresDatabaseManager {
   }
 
   async getPlayer(guid) {
-    const result = await this.pool.query('SELECT * FROM players WHERE guid = $1', [guid]);
-    return result.rows.length > 0 ? this.rowToPlayer(result.rows[0]) : null;
+    // Calculate actual race count from session data to ensure accuracy
+    // Match any session type containing 'race' (race1, race2, RACE1, RACE2, etc.)
+    const result = await this.pool.query(`
+      SELECT p.*,
+        COALESCE(race_count.count, 0) as "actualTotalRaces",
+        COALESCE(win_count.count, 0) as "actualWins",
+        COALESCE(podium_count.count, 0) as "actualPodiums"
+      FROM players p
+      LEFT JOIN (
+        SELECT ps."playerGuid", COUNT(*) as count
+        FROM player_sessions ps
+        INNER JOIN sessions s ON s.id = ps."sessionId"
+        WHERE LOWER(s."sessionType") LIKE '%race%'
+        GROUP BY ps."playerGuid"
+      ) race_count ON race_count."playerGuid" = p.guid
+      LEFT JOIN (
+        SELECT ps."playerGuid", COUNT(*) as count
+        FROM player_sessions ps
+        INNER JOIN sessions s ON s.id = ps."sessionId"
+        WHERE LOWER(s."sessionType") LIKE '%race%' AND ps.position = 1
+        GROUP BY ps."playerGuid"
+      ) win_count ON win_count."playerGuid" = p.guid
+      LEFT JOIN (
+        SELECT ps."playerGuid", COUNT(*) as count
+        FROM player_sessions ps
+        INNER JOIN sessions s ON s.id = ps."sessionId"
+        WHERE LOWER(s."sessionType") LIKE '%race%' AND ps.position <= 3
+        GROUP BY ps."playerGuid"
+      ) podium_count ON podium_count."playerGuid" = p.guid
+      WHERE p.guid = $1
+    `, [guid]);
+
+    if (result.rows.length === 0) return null;
+
+    const row = result.rows[0];
+    const player = this.rowToPlayer(row);
+    // Override with actual counts from session data
+    player.totalRaces = parseInt(row.actualTotalRaces) || player.totalRaces;
+    player.wins = parseInt(row.actualWins) || player.wins;
+    player.podiums = parseInt(row.actualPodiums) || player.podiums;
+    return player;
   }
 
   async getAllPlayers() {
