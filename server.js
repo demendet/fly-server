@@ -1177,6 +1177,44 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
   }
 });
 
+// Admin: Delete a report (SuperAdmin only for now - testing)
+app.delete('/api/admin/reports/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+
+    const deleted = await db.deleteReport(id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    console.log(`[ADMIN] Report ${id} deleted by ${adminName}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[ADMIN] Delete report error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Delete an appeal (SuperAdmin only for now - testing)
+app.delete('/api/admin/ban-appeals/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+
+    const deleted = await db.deleteAppeal(id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Appeal not found' });
+    }
+
+    console.log(`[ADMIN] Appeal ${id} deleted by ${adminName}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[ADMIN] Delete appeal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ==========================================
 // NOTIFICATIONS ENDPOINTS
 // ==========================================

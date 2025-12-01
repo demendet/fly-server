@@ -1478,6 +1478,16 @@ export class PostgresDatabaseManager {
     return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
   }
 
+  async deleteReport(id) {
+    const result = await this.pool.query(`DELETE FROM player_reports WHERE id = $1 RETURNING id`, [id]);
+    return result.rows.length > 0;
+  }
+
+  async deleteAppeal(id) {
+    const result = await this.pool.query(`DELETE FROM ban_appeals WHERE id = $1 RETURNING id`, [id]);
+    return result.rows.length > 0;
+  }
+
   rowToReport(row) {
     return {
       id: row.id,
