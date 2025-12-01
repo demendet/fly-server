@@ -1216,16 +1216,29 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
           const firstServer = servers[0];
           const serverId = firstServer.id || firstServer.Id;
           // Use full-ban endpoint if available, fallback to ban endpoint
-          const result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
-            ...banData,
-            isGlobal: true
-          }).catch(() => fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
-            ...banData,
-            isGlobal: true
-          }));
-          results.push({ source: source.id, result });
+          let result;
+          let usedEndpoint = 'full-ban';
+          try {
+            result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
+              ...banData,
+              isGlobal: true
+            });
+            console.log(`[ADMIN] Ban succeeded via full-ban on ${source.id}`);
+          } catch (fullBanErr) {
+            console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying ban endpoint`);
+            usedEndpoint = 'ban';
+            result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+              ...banData,
+              isGlobal: true
+            });
+            console.log(`[ADMIN] Ban succeeded via ban on ${source.id}`);
+          }
+          results.push({ source: source.id, result, endpoint: usedEndpoint });
+        } else {
+          console.log(`[ADMIN] No servers found on ${source.id}`);
         }
       } catch (err) {
+        console.error(`[ADMIN] Ban failed on ${source.id}: ${err.message}`);
         errors.push({ source: source.id, error: err.message });
       }
     }
@@ -1251,8 +1264,25 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
       }
     }
 
-    console.log(`[ADMIN] Banned player ${banData.playerName} on ${results.length} managers`);
-    res.json({ success: results.length > 0, results, errors });
+    console.log(`[ADMIN] Banned player ${banData.playerName} on ${results.length} managers, ${errors.length} errors`);
+
+    // Return more detailed response
+    const response = {
+      success: results.length > 0,
+      results,
+      errors,
+      message: results.length > 0
+        ? `Banned on ${results.length} manager(s)${errors.length > 0 ? `, ${errors.length} failed` : ''}`
+        : errors.length > 0
+          ? `Ban failed: ${errors.map(e => e.error).join(', ')}`
+          : 'No managers available'
+    };
+
+    if (results.length === 0 && errors.length > 0) {
+      res.status(400).json(response);
+    } else {
+      res.json(response);
+    }
   } catch (err) {
     console.error('[ADMIN] Global ban error:', err.message);
     res.status(500).json({ error: err.message });
