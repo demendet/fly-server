@@ -290,6 +290,24 @@ export class PostgresDatabaseManager {
         console.log('[POSTGRES] relatedId migration:', migrationErr.message);
       }
 
+      // Player Warnings table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS player_warnings (
+          id TEXT PRIMARY KEY,
+          "playerGuid" TEXT NOT NULL,
+          "playerName" TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          "warnedBy" TEXT NOT NULL,
+          "reportId" TEXT,
+          "createdAt" BIGINT NOT NULL
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_player_warnings_player ON player_warnings("playerGuid");
+        CREATE INDEX IF NOT EXISTS idx_player_warnings_created ON player_warnings("createdAt" DESC);
+      `);
+
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
       client.release();
@@ -495,6 +513,17 @@ export class PostgresDatabaseManager {
         "updatedAt" = $5
       WHERE guid = $6
     `, [mmrChange, srChange, won ? 1 : 0, podium ? 1 : 0, Date.now(), guid]);
+  }
+
+  // Reduce safety rating by a percentage (e.g., 0.2 for 20%)
+  async reduceSafetyRating(guid, reduction = 0.2) {
+    await this.pool.query(`
+      UPDATE players SET
+        "safetyRating" = GREATEST(0.0, "safetyRating" - $1),
+        "updatedAt" = $2
+      WHERE guid = $3
+    `, [reduction, Date.now(), guid]);
+    console.log(`[POSTGRES] Reduced safety rating for ${guid} by ${reduction * 100}%`);
   }
 
   calculateMMRChanges(raceResults) {
@@ -1259,6 +1288,42 @@ export class PostgresDatabaseManager {
     const result = await this.pool.query(
       `DELETE FROM ban_history WHERE id = $1 RETURNING id`,
       [entryId]
+    );
+    return result.rows.length > 0;
+  }
+
+  // ============ PLAYER WARNINGS ============
+
+  async createWarning(warning) {
+    const id = `warning_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await this.pool.query(`
+      INSERT INTO player_warnings (id, "playerGuid", "playerName", reason, "warnedBy", "reportId", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `, [
+      id,
+      warning.playerGuid,
+      warning.playerName,
+      warning.reason,
+      warning.warnedBy,
+      warning.reportId || null,
+      Date.now()
+    ]);
+    return { id, ...warning };
+  }
+
+  async getPlayerWarnings(playerGuid) {
+    const result = await this.pool.query(`
+      SELECT * FROM player_warnings
+      WHERE "playerGuid" = $1
+      ORDER BY "createdAt" DESC
+    `, [playerGuid]);
+    return result.rows;
+  }
+
+  async deleteWarning(warningId) {
+    const result = await this.pool.query(
+      `DELETE FROM player_warnings WHERE id = $1 RETURNING id`,
+      [warningId]
     );
     return result.rows.length > 0;
   }

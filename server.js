@@ -1177,16 +1177,37 @@ app.post('/api/admin/reports/:id/claim', requireAuth, requireModerator, async (r
 app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async (req, res) => {
   try {
     const { id } = req.params;
-    const { actionTaken, resolution } = req.body;
+    const { actionTaken, resolution, warningReason } = req.body;
     const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
 
     if (!actionTaken) {
       return res.status(400).json({ error: 'Missing actionTaken' });
     }
 
+    // If action is 'warned', require a warning reason
+    if (actionTaken === 'warned' && !warningReason) {
+      return res.status(400).json({ error: 'Warning reason is required when issuing a warning' });
+    }
+
     const report = await db.resolveReport(id, adminName, actionTaken, resolution || '');
     if (!report) {
       return res.status(404).json({ error: 'Report not found' });
+    }
+
+    // If action is 'warned', create a warning for the offender
+    if (actionTaken === 'warned' && warningReason) {
+      try {
+        await db.createWarning({
+          playerGuid: report.offenderGuid.toUpperCase(),
+          playerName: report.offenderName,
+          reason: warningReason,
+          warnedBy: adminName,
+          reportId: report.id
+        });
+        console.log(`[ADMIN] Warning created for ${report.offenderName}: ${warningReason}`);
+      } catch (warnErr) {
+        console.error('[ADMIN] Warning creation error:', warnErr.message);
+      }
     }
 
     // Create notification for the reporter
@@ -1485,6 +1506,62 @@ app.get('/api/player/:guid/ban-status', async (req, res) => {
   }
 });
 
+// ============ PLAYER WARNINGS (PUBLIC) ============
+
+app.get('/api/player/:guid/warnings', async (req, res) => {
+  try {
+    const { guid } = req.params;
+    const warnings = await db.getPlayerWarnings(guid.toUpperCase());
+    res.json(warnings);
+  } catch (err) {
+    console.error('[WARNINGS] Error fetching warnings:', err.message);
+    res.status(500).json({ error: 'Failed to fetch warnings' });
+  }
+});
+
+// ============ ADMIN WARNINGS ============
+
+app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { playerGuid, playerName, reason, reportId } = req.body;
+
+    if (!playerGuid || !reason) {
+      return res.status(400).json({ error: 'Player GUID and reason are required' });
+    }
+
+    const warning = await db.createWarning({
+      playerGuid: playerGuid.toUpperCase(),
+      playerName: playerName || 'Unknown',
+      reason,
+      warnedBy: req.user.displayName || req.user.email,
+      reportId
+    });
+
+    console.log(`[ADMIN] Warning issued to ${playerName} (${playerGuid}) by ${req.user.displayName}: ${reason}`);
+    res.json({ success: true, warning });
+  } catch (err) {
+    console.error('[ADMIN] Warn error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/warnings/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const success = await db.deleteWarning(id);
+
+    if (!success) {
+      return res.status(404).json({ error: 'Warning not found' });
+    }
+
+    console.log(`[ADMIN] Warning ${id} deleted by ${req.user.displayName}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[ADMIN] Delete warning error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/bans', requireAuth, requireModerator, async (req, res) => {
   try {
     const sources = getApiSources();
@@ -1692,6 +1769,14 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
       } catch (histErr) {
         console.error('[ADMIN] Failed to store ban history:', histErr.message);
       }
+
+      // Reduce safety rating by 20% when banned
+      try {
+        await db.reduceSafetyRating(banData.playerGuid, 0.2);
+        console.log(`[ADMIN] Safety rating reduced by 20% for ${banData.playerName}`);
+      } catch (srErr) {
+        console.error('[ADMIN] Failed to reduce safety rating:', srErr.message);
+      }
     }
 
     console.log(`[ADMIN] Banned player ${banData.playerName} on ${results.length} managers, ${errors.length} errors`);
@@ -1809,6 +1894,14 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
         sourceManager: results.map(r => r.source).join(','),
         serverName: serverName // Store which server they were banned from
       });
+
+      // Reduce safety rating by 20% when banned
+      try {
+        await db.reduceSafetyRating(banData.playerGuid, 0.2);
+        console.log(`[ADMIN] Safety rating reduced by 20% for ${banData.playerName}`);
+      } catch (srErr) {
+        console.error('[ADMIN] Failed to reduce safety rating:', srErr.message);
+      }
     } catch (histErr) {
       console.error('[ADMIN] Failed to store ban history:', histErr.message);
     }
