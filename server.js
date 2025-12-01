@@ -1296,9 +1296,29 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
   try {
     const { serverId } = req.params;
     const banData = req.body;
-    const result = await proxyToManager(`/servers/${serverId}/ban`, 'POST', banData);
-    console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId}`);
-    res.json(result);
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+    const isGlobal = banData.isGlobal === true; // Default to false for server-specific bans
+
+    // Use full-ban endpoint to run complete ban flow
+    let result;
+    try {
+      result = await proxyToManager(`/servers/${serverId}/full-ban`, 'POST', {
+        ...banData,
+        isGlobal,
+        bannedBy: adminName
+      });
+      console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId} via full-ban by ${adminName}`);
+    } catch (fullBanErr) {
+      // Fallback to basic ban if full-ban not available
+      console.log(`[ADMIN] full-ban failed: ${fullBanErr.message}, trying basic ban`);
+      result = await proxyToManager(`/servers/${serverId}/ban`, 'POST', {
+        ...banData,
+        isGlobal
+      });
+      console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId} via basic ban`);
+    }
+
+    res.json({ success: true, result });
   } catch (err) {
     console.error('[ADMIN] Ban player error:', err.message);
     res.status(500).json({ error: err.message });
