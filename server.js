@@ -247,6 +247,9 @@ app.use('/api/', (req, res, next) => {
   const referer = req.headers.referer || req.headers.referrer || '';
   const validOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
 
+  // Trusted Manager API server IPs (IONOS + Maine)
+  const trustedIPs = ['74.208.213.14', '71.181.74.118'];
+
   // Check if request came through Cloudflare Tunnel (has CF headers)
   const isTunneled = req.headers['cf-connecting-ip'] || req.headers['cf-ray'];
 
@@ -255,6 +258,9 @@ app.use('/api/', (req, res, next) => {
 
   // Only allow localhost bypass for NON-tunneled requests (actual local requests)
   const isRealLocalhost = !isTunneled && (realIp === '::1' || realIp === '127.0.0.1' || realIp === '::ffff:127.0.0.1');
+
+  // Check if request is from trusted Manager API server
+  const isTrustedIP = trustedIPs.includes(realIp);
 
   // Check Origin header (sent by browsers for cross-origin requests)
   const isValidOrigin = validOrigins.some(o => origin === o || origin.startsWith(o));
@@ -266,8 +272,8 @@ app.use('/api/', (req, res, next) => {
   const apiKey = req.headers['x-api-key'];
   const hasValidApiKey = apiKey && (apiKey === env.MXBIKES_API_KEY_1 || apiKey === env.MXBIKES_API_KEY_2);
 
-  // Allow if origin OR referer matches, OR it's real localhost, OR has valid API key
-  const isValid = isRealLocalhost || isValidOrigin || isValidReferer || hasValidApiKey;
+  // Allow if origin OR referer matches, OR it's real localhost, OR has valid API key, OR trusted IP
+  const isValid = isRealLocalhost || isTrustedIP || isValidOrigin || isValidReferer || hasValidApiKey;
 
   if (!isValid) {
     console.log(`[BLOCKED] ${realIp} - Origin: ${origin || 'none'} - Referer: ${referer || 'none'} - Tunneled: ${!!isTunneled}`);
