@@ -1117,8 +1117,9 @@ app.post('/api/admin/ban-appeals/:id/claim', requireAuth, requireModerator, asyn
   try {
     const { id } = req.params;
     const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+    const adminGuid = req.userProfile?.linkedPlayerGuid || null;
 
-    const appeal = await db.claimAppeal(id, adminName);
+    const appeal = await db.claimAppeal(id, adminName, adminGuid);
     if (!appeal) {
       return res.status(404).json({ error: 'Appeal not found or already claimed' });
     }
@@ -1151,12 +1152,13 @@ app.post('/api/admin/ban-appeals/:id/resolve', requireAuth, requireAdmin, async 
     const { id } = req.params;
     const { accepted, resolution, cooldownHours } = req.body;
     const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+    const adminGuid = req.userProfile?.linkedPlayerGuid || null;
 
     if (typeof accepted !== 'boolean') {
       return res.status(400).json({ error: 'Missing accepted (boolean)' });
     }
 
-    const appeal = await db.resolveAppeal(id, adminName, accepted, resolution || '', cooldownHours || 24);
+    const appeal = await db.resolveAppeal(id, adminName, adminGuid, accepted, resolution || '', cooldownHours || 24);
     if (!appeal) {
       return res.status(404).json({ error: 'Appeal not found' });
     }
@@ -1289,8 +1291,9 @@ app.post('/api/admin/reports/:id/claim', requireAuth, requireModerator, async (r
   try {
     const { id } = req.params;
     const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+    const adminGuid = req.userProfile?.linkedPlayerGuid || null;
 
-    const report = await db.claimReport(id, adminName);
+    const report = await db.claimReport(id, adminName, adminGuid);
     if (!report) {
       return res.status(404).json({ error: 'Report not found or already claimed' });
     }
@@ -1323,6 +1326,7 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
     const { id } = req.params;
     const { actionTaken, resolution, warningReason } = req.body;
     const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+    const adminGuid = req.userProfile?.linkedPlayerGuid || null;
 
     if (!actionTaken) {
       return res.status(400).json({ error: 'Missing actionTaken' });
@@ -1333,7 +1337,7 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
       return res.status(400).json({ error: 'Warning reason is required when issuing a warning' });
     }
 
-    const report = await db.resolveReport(id, adminName, actionTaken, resolution || '');
+    const report = await db.resolveReport(id, adminName, adminGuid, actionTaken, resolution || '');
     if (!report) {
       return res.status(404).json({ error: 'Report not found' });
     }

@@ -223,6 +223,14 @@ export class PostgresDatabaseManager {
         ALTER TABLE ban_appeals ADD COLUMN IF NOT EXISTS "videoUrl" TEXT
       `);
 
+      // Add claimedByGuid and resolvedByGuid columns for admin avatar display
+      await client.query(`
+        ALTER TABLE ban_appeals ADD COLUMN IF NOT EXISTS "claimedByGuid" TEXT
+      `);
+      await client.query(`
+        ALTER TABLE ban_appeals ADD COLUMN IF NOT EXISTS "resolvedByGuid" TEXT
+      `);
+
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_ban_appeals_user ON ban_appeals("userId");
         CREATE INDEX IF NOT EXISTS idx_ban_appeals_player ON ban_appeals("playerGuid");
@@ -261,6 +269,14 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_player_reports_offender ON player_reports("offenderGuid");
         CREATE INDEX IF NOT EXISTS idx_player_reports_status ON player_reports(status);
         CREATE INDEX IF NOT EXISTS idx_player_reports_created ON player_reports("createdAt" DESC);
+      `);
+
+      // Add claimedByGuid and resolvedByGuid columns for admin avatar display
+      await client.query(`
+        ALTER TABLE player_reports ADD COLUMN IF NOT EXISTS "claimedByGuid" TEXT
+      `);
+      await client.query(`
+        ALTER TABLE player_reports ADD COLUMN IF NOT EXISTS "resolvedByGuid" TEXT
       `);
 
       // Notifications table
@@ -1455,17 +1471,17 @@ export class PostgresDatabaseManager {
     return result.rows.length > 0 ? this.rowToAppeal(result.rows[0]) : null;
   }
 
-  async claimAppeal(id, adminName) {
+  async claimAppeal(id, adminName, adminGuid = null) {
     const now = Date.now();
     const result = await this.pool.query(`
-      UPDATE ban_appeals SET status = 'claimed', "claimedBy" = $1, "claimedAt" = $2, "updatedAt" = $3
-      WHERE id = $4 AND status = 'open'
+      UPDATE ban_appeals SET status = 'claimed', "claimedBy" = $1, "claimedByGuid" = $2, "claimedAt" = $3, "updatedAt" = $4
+      WHERE id = $5 AND status = 'open'
       RETURNING *
-    `, [adminName, now, now, id]);
+    `, [adminName, adminGuid, now, now, id]);
     return result.rows.length > 0 ? this.rowToAppeal(result.rows[0]) : null;
   }
 
-  async resolveAppeal(id, adminName, accepted, resolution, cooldownHours = 24) {
+  async resolveAppeal(id, adminName, adminGuid, accepted, resolution, cooldownHours = 24) {
     const now = Date.now();
     const cooldownUntil = accepted ? null : now + (cooldownHours * 60 * 60 * 1000);
 
@@ -1473,13 +1489,14 @@ export class PostgresDatabaseManager {
       UPDATE ban_appeals SET
         status = $1,
         "resolvedBy" = $2,
-        "resolvedAt" = $3,
-        resolution = $4,
-        "cooldownUntil" = $5,
-        "updatedAt" = $6
-      WHERE id = $7
+        "resolvedByGuid" = $3,
+        "resolvedAt" = $4,
+        resolution = $5,
+        "cooldownUntil" = $6,
+        "updatedAt" = $7
+      WHERE id = $8
       RETURNING *
-    `, [accepted ? 'accepted' : 'denied', adminName, now, resolution, cooldownUntil, now, id]);
+    `, [accepted ? 'accepted' : 'denied', adminName, adminGuid, now, resolution, cooldownUntil, now, id]);
     return result.rows.length > 0 ? this.rowToAppeal(result.rows[0]) : null;
   }
 
@@ -1552,8 +1569,10 @@ export class PostgresDatabaseManager {
       videoUrl: row.videoUrl,
       status: row.status,
       claimedBy: row.claimedBy,
+      claimedByGuid: row.claimedByGuid,
       claimedAt: row.claimedAt ? parseInt(row.claimedAt) : null,
       resolvedBy: row.resolvedBy,
+      resolvedByGuid: row.resolvedByGuid,
       resolvedAt: row.resolvedAt ? parseInt(row.resolvedAt) : null,
       resolution: row.resolution,
       cooldownUntil: row.cooldownUntil ? parseInt(row.cooldownUntil) : null,
@@ -1621,17 +1640,17 @@ export class PostgresDatabaseManager {
     return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
   }
 
-  async claimReport(id, adminName) {
+  async claimReport(id, adminName, adminGuid = null) {
     const now = Date.now();
     const result = await this.pool.query(`
-      UPDATE player_reports SET status = 'claimed', "claimedBy" = $1, "claimedAt" = $2, "updatedAt" = $3
-      WHERE id = $4 AND status = 'open'
+      UPDATE player_reports SET status = 'claimed', "claimedBy" = $1, "claimedByGuid" = $2, "claimedAt" = $3, "updatedAt" = $4
+      WHERE id = $5 AND status = 'open'
       RETURNING *
-    `, [adminName, now, now, id]);
+    `, [adminName, adminGuid, now, now, id]);
     return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
   }
 
-  async resolveReport(id, adminName, actionTaken, resolution) {
+  async resolveReport(id, adminName, adminGuid, actionTaken, resolution) {
     const now = Date.now();
     const status = actionTaken === 'no_action' ? 'no_action' : 'action_taken';
 
@@ -1639,13 +1658,14 @@ export class PostgresDatabaseManager {
       UPDATE player_reports SET
         status = $1,
         "resolvedBy" = $2,
-        "resolvedAt" = $3,
-        resolution = $4,
-        "actionTaken" = $5,
-        "updatedAt" = $6
-      WHERE id = $7
+        "resolvedByGuid" = $3,
+        "resolvedAt" = $4,
+        resolution = $5,
+        "actionTaken" = $6,
+        "updatedAt" = $7
+      WHERE id = $8
       RETURNING *
-    `, [status, adminName, now, resolution, actionTaken, now, id]);
+    `, [status, adminName, adminGuid, now, resolution, actionTaken, now, id]);
     return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
   }
 
@@ -1678,8 +1698,10 @@ export class PostgresDatabaseManager {
       videoUrl: row.videoUrl,
       status: row.status,
       claimedBy: row.claimedBy,
+      claimedByGuid: row.claimedByGuid,
       claimedAt: row.claimedAt ? parseInt(row.claimedAt) : null,
       resolvedBy: row.resolvedBy,
+      resolvedByGuid: row.resolvedByGuid,
       resolvedAt: row.resolvedAt ? parseInt(row.resolvedAt) : null,
       resolution: row.resolution,
       actionTaken: row.actionTaken,
