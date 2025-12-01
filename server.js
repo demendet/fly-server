@@ -979,6 +979,19 @@ app.post('/api/admin/ban-appeals/:id/claim', requireAuth, requireModerator, asyn
       return res.status(404).json({ error: 'Appeal not found or already claimed' });
     }
 
+    // Create notification for the user that their appeal is being reviewed
+    try {
+      await db.createNotification({
+        userId: appeal.userId,
+        type: 'appeal_claimed',
+        title: 'Ban Appeal Under Review',
+        message: `Your ban appeal is now being reviewed by ${adminName}.`,
+        link: '/ban-appeal'
+      });
+    } catch (notifErr) {
+      console.error('[ADMIN] Failed to create claim notification:', notifErr.message);
+    }
+
     console.log(`[ADMIN] Appeal #${appeal.appealIndex} claimed by ${adminName}`);
     res.json({ success: true, appeal });
   } catch (err) {
@@ -1134,6 +1147,19 @@ app.post('/api/admin/reports/:id/claim', requireAuth, requireModerator, async (r
     const report = await db.claimReport(id, adminName);
     if (!report) {
       return res.status(404).json({ error: 'Report not found or already claimed' });
+    }
+
+    // Create notification for the reporter that their report is being reviewed
+    try {
+      await db.createNotification({
+        userId: report.reporterUserId,
+        type: 'report_claimed',
+        title: 'Player Report Under Review',
+        message: `Your report against ${report.offenderName} is now being reviewed by ${adminName}.`,
+        link: '/report'
+      });
+    } catch (notifErr) {
+      console.error('[ADMIN] Failed to create claim notification:', notifErr.message);
     }
 
     console.log(`[ADMIN] Report #${report.reportIndex} claimed by ${adminName}`);
