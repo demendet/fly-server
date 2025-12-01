@@ -226,6 +226,50 @@ app.use(cors({
 
 app.use(express.json());
 
+// Rate limiting - 500 requests per minute per IP (high limit for normal use)
+const rateLimitMap = new Map();
+const RATE_LIMIT_WINDOW = 60000; // 1 minute
+const RATE_LIMIT_MAX = 500; // 500 requests per minute
+
+// Clean up old entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, data] of rateLimitMap.entries()) {
+    if (now - data.start > RATE_LIMIT_WINDOW * 2) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 300000);
+
+app.use('/api/', (req, res, next) => {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown';
+  const now = Date.now();
+
+  let client = rateLimitMap.get(ip);
+
+  if (!client || now - client.start > RATE_LIMIT_WINDOW) {
+    client = { count: 1, start: now };
+  } else {
+    client.count++;
+  }
+
+  rateLimitMap.set(ip, client);
+
+  // Add rate limit headers
+  res.setHeader('X-RateLimit-Limit', RATE_LIMIT_MAX);
+  res.setHeader('X-RateLimit-Remaining', Math.max(0, RATE_LIMIT_MAX - client.count));
+
+  if (client.count > RATE_LIMIT_MAX) {
+    console.log(`[RATE LIMIT] Blocked ${ip} - ${client.count} requests in window`);
+    return res.status(429).json({
+      error: 'Too many requests',
+      retryAfter: Math.ceil((client.start + RATE_LIMIT_WINDOW - now) / 1000)
+    });
+  }
+
+  next();
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
