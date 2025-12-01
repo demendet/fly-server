@@ -1252,9 +1252,10 @@ export class PostgresDatabaseManager {
     const id = `appeal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const now = Date.now();
 
-    await this.pool.query(`
+    const result = await this.pool.query(`
       INSERT INTO ban_appeals (id, "playerGuid", "playerName", "userId", "banReason", "banDate", "banExpiry", "isPermanent", "serverName", "isGlobal", "appealReason", "additionalInfo", "videoUrl", status, "createdAt", "updatedAt")
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      RETURNING *
     `, [
       id,
       appeal.playerGuid,
@@ -1274,7 +1275,7 @@ export class PostgresDatabaseManager {
       now
     ]);
 
-    return id;
+    return this.rowToAppeal(result.rows[0]);
   }
 
   async getUserAppeals(userId) {
