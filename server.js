@@ -241,6 +241,22 @@ setInterval(() => {
   }
 }, 300000);
 
+// Referrer check - only allow requests from our domains
+app.use('/api/', (req, res, next) => {
+  const referer = req.headers.referer || req.headers.referrer || '';
+  const validReferers = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost'];
+
+  // Allow if referer matches one of our domains
+  const isValid = validReferers.some(r => referer.startsWith(r));
+
+  if (!isValid) {
+    console.log(`[REFERER BLOCKED] ${req.ip} - Referer: ${referer || 'none'}`);
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+});
+
+// Rate limiting - 500 requests per minute per IP
 app.use('/api/', (req, res, next) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown';
   const now = Date.now();
