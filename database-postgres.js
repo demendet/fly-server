@@ -1255,6 +1255,14 @@ export class PostgresDatabaseManager {
     }));
   }
 
+  async deleteBanHistoryEntry(entryId) {
+    const result = await this.pool.query(
+      `DELETE FROM ban_history WHERE id = $1 RETURNING id`,
+      [entryId]
+    );
+    return result.rows.length > 0;
+  }
+
   // ============ BAN APPEALS ============
 
   async createBanAppeal(appeal) {

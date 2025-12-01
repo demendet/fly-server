@@ -1919,6 +1919,22 @@ app.get('/api/admin/ban-history/:playerGuid', requireAuth, requireAdmin, async (
   }
 });
 
+// Delete ban history entry
+app.delete('/api/admin/ban-history/entry/:entryId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { entryId } = req.params;
+    const success = await db.deleteBanHistoryEntry(entryId);
+    if (!success) {
+      return res.status(404).json({ error: 'Ban history entry not found' });
+    }
+    console.log(`[ADMIN] Ban history entry ${entryId} deleted`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[ADMIN] Delete ban history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Ban Sync Endpoint - syncs bans between all managers
 app.post('/api/admin/sync-bans', requireAuth, requireAdmin, async (req, res) => {
   try {
