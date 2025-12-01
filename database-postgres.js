@@ -280,13 +280,15 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications("userId");
         CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications("userId", read) WHERE read = FALSE;
         CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications("createdAt" DESC);
-        CREATE INDEX IF NOT EXISTS idx_notifications_related ON notifications("relatedId");
       `);
 
       // Migration: Add relatedId column if it doesn't exist (for existing databases)
-      await client.query(`
-        ALTER TABLE notifications ADD COLUMN IF NOT EXISTS "relatedId" TEXT
-      `);
+      try {
+        await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS "relatedId" TEXT`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_related ON notifications("relatedId")`);
+      } catch (migrationErr) {
+        console.log('[POSTGRES] relatedId migration:', migrationErr.message);
+      }
 
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
