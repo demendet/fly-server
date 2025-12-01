@@ -1155,6 +1155,26 @@ app.get('/api/admin/bans', requireAuth, requireModerator, async (req, res) => {
     const uniqueBans = Array.from(allBansMap.values());
     console.log(`[ADMIN] Fetched ${uniqueBans.length} unique bans from ${sources.length} managers`);
 
+    // Cross-reference with ban_history to get correct performedBy (admin name)
+    try {
+      for (const ban of uniqueBans) {
+        const banHistory = await db.getBanHistory(ban.playerGuid);
+        if (banHistory && banHistory.length > 0) {
+          // Find the matching ban entry by looking for closest timestamp
+          const matchingEntry = banHistory.find(h =>
+            h.action === 'ban' &&
+            h.reason === ban.reason
+          ) || banHistory.find(h => h.action === 'ban');
+
+          if (matchingEntry && matchingEntry.performedBy && matchingEntry.performedBy !== 'System') {
+            ban.bannedBy = matchingEntry.performedBy;
+          }
+        }
+      }
+    } catch (historyErr) {
+      console.log('[ADMIN] Could not enrich bans with history:', historyErr.message);
+    }
+
     res.json({
       bans: uniqueBans,
       totalUnique: uniqueBans.length,
