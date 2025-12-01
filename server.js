@@ -1296,29 +1296,63 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
   try {
     const { serverId } = req.params;
     const banData = req.body;
+    const sources = getApiSources();
     const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
     const isGlobal = banData.isGlobal === true; // Default to false for server-specific bans
 
-    // Use full-ban endpoint to run complete ban flow
-    let result;
-    try {
-      result = await proxyToManager(`/servers/${serverId}/full-ban`, 'POST', {
-        ...banData,
-        isGlobal,
-        bannedBy: adminName
-      });
-      console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId} via full-ban by ${adminName}`);
-    } catch (fullBanErr) {
-      // Fallback to basic ban if full-ban not available
-      console.log(`[ADMIN] full-ban failed: ${fullBanErr.message}, trying basic ban`);
-      result = await proxyToManager(`/servers/${serverId}/ban`, 'POST', {
-        ...banData,
-        isGlobal
-      });
-      console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId} via basic ban`);
+    const results = [];
+    const errors = [];
+
+    // Try all managers - the one that owns this server will succeed
+    for (const source of sources) {
+      try {
+        // First check if this manager has this server
+        const serversResp = await fetchFromManager(source, '/servers');
+        const servers = Array.isArray(serversResp) ? serversResp : [];
+        const hasServer = servers.some(s => (s.id || s.Id) === serverId);
+
+        if (!hasServer) {
+          console.log(`[ADMIN] Server ${serverId} not found on ${source.id}, skipping`);
+          continue;
+        }
+
+        // This manager has the server, do the ban
+        let result;
+        try {
+          result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
+            ...banData,
+            isGlobal,
+            bannedBy: adminName
+          });
+          console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId} via full-ban on ${source.id}`);
+        } catch (fullBanErr) {
+          console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying basic ban`);
+          result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+            ...banData,
+            isGlobal
+          });
+          console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId} via basic ban on ${source.id}`);
+        }
+        results.push({ source: source.id, result });
+      } catch (err) {
+        console.error(`[ADMIN] Ban failed on ${source.id}: ${err.message}`);
+        errors.push({ source: source.id, error: err.message });
+      }
     }
 
-    res.json({ success: true, result });
+    if (results.length === 0) {
+      const errorMsg = errors.length > 0
+        ? `Ban failed: ${errors.map(e => e.error).join(', ')}`
+        : `Server ${serverId} not found on any manager`;
+      return res.status(400).json({ success: false, error: errorMsg, errors });
+    }
+
+    res.json({
+      success: true,
+      message: `Banned on ${results.length} manager(s)`,
+      results,
+      errors: errors.length > 0 ? errors : undefined
+    });
   } catch (err) {
     console.error('[ADMIN] Ban player error:', err.message);
     res.status(500).json({ error: err.message });
