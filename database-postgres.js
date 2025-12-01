@@ -43,7 +43,9 @@ export class PostgresDatabaseManager {
           "isBanned" BOOLEAN DEFAULT FALSE,
           "banReason" TEXT,
           "banExpiry" BIGINT,
-          notes TEXT
+          notes TEXT,
+          "steamAvatarUrl" TEXT,
+          "steamAvatarUpdated" BIGINT
         )
       `);
 
@@ -740,8 +742,52 @@ export class PostgresDatabaseManager {
       isBanned: row.isBanned,
       banReason: row.banReason,
       banExpiry: row.banExpiry ? parseInt(row.banExpiry) : null,
-      notes: row.notes
+      notes: row.notes,
+      profileImageUrl: row.steamAvatarUrl || null
     };
+  }
+
+  // Update Steam avatar for a player
+  async updatePlayerSteamAvatar(guid, avatarUrl) {
+    await this.pool.query(
+      `UPDATE players SET "steamAvatarUrl" = $1, "steamAvatarUpdated" = $2 WHERE guid = $3`,
+      [avatarUrl, Date.now(), guid]
+    );
+  }
+
+  // Batch update Steam avatars
+  async batchUpdateSteamAvatars(avatarMap) {
+    if (Object.keys(avatarMap).length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const [guid, avatarUrl] of Object.entries(avatarMap)) {
+        await client.query(
+          `UPDATE players SET "steamAvatarUrl" = $1, "steamAvatarUpdated" = $2 WHERE guid = $3`,
+          [avatarUrl, Date.now(), guid]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Get players needing avatar sync (no avatar or stale > 7 days)
+  async getPlayersNeedingAvatarSync(limit = 100) {
+    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    const result = await this.pool.query(`
+      SELECT guid FROM players
+      WHERE "steamAvatarUrl" IS NULL
+         OR "steamAvatarUpdated" IS NULL
+         OR "steamAvatarUpdated" < $1
+      ORDER BY "lastSeen" DESC NULLS LAST
+      LIMIT $2
+    `, [sevenDaysAgo, limit]);
+    return result.rows.map(r => r.guid);
   }
 
   async createSession(session) {

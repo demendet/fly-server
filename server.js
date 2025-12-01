@@ -832,6 +832,70 @@ function setCachedSteamAvatar(guid, data) {
   steamAvatarCache.set(guid, { data, timestamp: Date.now() });
 }
 
+// ==========================================
+// BACKGROUND STEAM AVATAR SYNC
+// Fetches and caches Steam avatars in database
+// ==========================================
+let lastAvatarSyncTime = 0;
+const AVATAR_SYNC_INTERVAL = 60000; // Run every 60 seconds
+const AVATAR_BATCH_SIZE = 50; // Steam API allows up to 100
+
+async function syncSteamAvatars() {
+  try {
+    // Get players needing avatar sync
+    const guidsToSync = await db.getPlayersNeedingAvatarSync(AVATAR_BATCH_SIZE);
+    if (guidsToSync.length === 0) return;
+
+    console.log(`[AVATAR SYNC] Syncing ${guidsToSync.length} player avatars...`);
+
+    // Convert GUIDs to Steam64 IDs
+    const steam64s = guidsToSync
+      .map(guid => ({ guid, steam64: guidToSteam64(guid) }))
+      .filter(item => item.steam64);
+
+    if (steam64s.length === 0) return;
+
+    const steamIds = steam64s.map(s => s.steam64).join(',');
+    const response = await fetch(
+      `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${env.STEAM_API_KEY}&steamids=${steamIds}`,
+      { signal: AbortSignal.timeout(15000) }
+    );
+
+    if (!response.ok) {
+      console.error('[AVATAR SYNC] Steam API error:', response.status);
+      return;
+    }
+
+    const data = await response.json();
+    const players = data.response?.players || [];
+
+    // Build avatar map
+    const avatarMap = {};
+    const playerMap = new Map();
+
+    for (const player of players) {
+      const guid = steam64ToGuid(player.steamid);
+      if (guid) {
+        playerMap.set(guid, player.avatarfull || player.avatarmedium || player.avatar);
+      }
+    }
+
+    // Set avatar URLs (or null for players not found)
+    for (const guid of guidsToSync) {
+      avatarMap[guid] = playerMap.get(guid) || null;
+    }
+
+    // Batch update database
+    await db.batchUpdateSteamAvatars(avatarMap);
+
+    const found = Object.values(avatarMap).filter(v => v).length;
+    console.log(`[AVATAR SYNC] Updated ${found}/${guidsToSync.length} avatars`);
+
+  } catch (err) {
+    console.error('[AVATAR SYNC] Error:', err.message);
+  }
+}
+
 app.post('/api/steam/avatars', async (req, res) => {
   try {
     const { guids } = req.body;
@@ -2352,6 +2416,16 @@ app.listen(PORT, async () => {
 
       try {
         await stateManager.runUpdateCycle();
+
+        // Run Steam avatar sync every AVATAR_SYNC_INTERVAL (60s)
+        const now = Date.now();
+        if (now - lastAvatarSyncTime >= AVATAR_SYNC_INTERVAL) {
+          lastAvatarSyncTime = now;
+          // Run async - don't block update loop
+          syncSteamAvatars().catch(err => {
+            console.error('[AVATAR SYNC] Background error:', err.message);
+          });
+        }
       } catch (err) {
         console.error('[UPDATE LOOP] Error:', err.message);
       } finally {
