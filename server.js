@@ -927,6 +927,9 @@ app.post('/api/ban-appeals', requireAuth, async (req, res) => {
 // Get user's own appeals
 app.get('/api/ban-appeals/my', requireAuth, async (req, res) => {
   try {
+    // Auto-resolve any expired ban appeals first
+    await db.autoResolveExpiredAppeals();
+
     const appeals = await db.getUserAppeals(req.userId);
     res.json(appeals);
   } catch (err) {
@@ -953,6 +956,9 @@ app.get('/api/ban-appeals/can-appeal', requireAuth, async (req, res) => {
 // Admin: Get all appeals
 app.get('/api/admin/ban-appeals', requireAuth, requireModerator, async (req, res) => {
   try {
+    // Auto-resolve any expired ban appeals first
+    await db.autoResolveExpiredAppeals();
+
     const { status } = req.query;
     const appeals = await db.getAllAppeals(status || null);
     res.json(appeals);

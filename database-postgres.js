@@ -1373,6 +1373,30 @@ export class PostgresDatabaseManager {
     return { canAppeal: true };
   }
 
+  // Auto-resolve appeals where the ban has expired
+  async autoResolveExpiredAppeals() {
+    const now = Date.now();
+    const result = await this.pool.query(`
+      UPDATE ban_appeals SET
+        status = 'accepted',
+        "resolvedBy" = 'System',
+        "resolvedAt" = $1,
+        resolution = 'Ban expired - automatically resolved',
+        "updatedAt" = $1
+      WHERE status IN ('open', 'claimed')
+        AND "isPermanent" = false
+        AND "banExpiry" IS NOT NULL
+        AND "banExpiry" < $1
+      RETURNING *
+    `, [now]);
+
+    if (result.rows.length > 0) {
+      console.log(`[BAN-APPEAL] Auto-resolved ${result.rows.length} expired ban appeals`);
+    }
+
+    return result.rows.map(row => this.rowToAppeal(row));
+  }
+
   rowToAppeal(row) {
     return {
       id: row.id,
@@ -1407,9 +1431,10 @@ export class PostgresDatabaseManager {
     const id = `report_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const now = Date.now();
 
-    await this.pool.query(`
+    const result = await this.pool.query(`
       INSERT INTO player_reports (id, "reporterGuid", "reporterName", "reporterUserId", "offenderGuid", "offenderName", "serverName", reason, description, "videoUrl", status, "createdAt", "updatedAt")
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING *
     `, [
       id,
       report.reporterGuid,
@@ -1426,7 +1451,7 @@ export class PostgresDatabaseManager {
       now
     ]);
 
-    return id;
+    return this.rowToReport(result.rows[0]);
   }
 
   async getUserReports(userId) {
