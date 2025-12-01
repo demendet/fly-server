@@ -311,10 +311,13 @@ export class PostgresDatabaseManager {
 
     const row = result.rows[0];
     const player = this.rowToPlayer(row);
-    // Override with actual counts from session data
-    player.totalRaces = parseInt(row.actualTotalRaces) || player.totalRaces;
-    player.wins = parseInt(row.actualWins) || player.wins;
-    player.podiums = parseInt(row.actualPodiums) || player.podiums;
+    // Override with actual counts from session data (use calculated values, not stored)
+    const actualRaces = parseInt(row.actualTotalRaces);
+    const actualWins = parseInt(row.actualWins);
+    const actualPodiums = parseInt(row.actualPodiums);
+    player.totalRaces = !isNaN(actualRaces) ? actualRaces : player.totalRaces;
+    player.wins = !isNaN(actualWins) ? actualWins : player.wins;
+    player.podiums = !isNaN(actualPodiums) ? actualPodiums : player.podiums;
     return player;
   }
 
