@@ -883,7 +883,8 @@ app.post('/api/ban-appeals', requireAuth, async (req, res) => {
       serverName,
       isGlobal,
       appealReason,
-      additionalInfo
+      additionalInfo,
+      videoUrl
     } = req.body;
 
     if (!playerGuid || !appealReason) {
@@ -910,7 +911,8 @@ app.post('/api/ban-appeals', requireAuth, async (req, res) => {
       serverName: serverName || null,
       isGlobal: isGlobal !== false,
       appealReason,
-      additionalInfo: additionalInfo || null
+      additionalInfo: additionalInfo || null,
+      videoUrl: videoUrl || null
     });
 
     console.log(`[BAN-APPEAL] New appeal #${appeal.appealIndex} from ${playerName} (${playerGuid})`);

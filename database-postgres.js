@@ -203,6 +203,7 @@ export class PostgresDatabaseManager {
           "isGlobal" BOOLEAN DEFAULT FALSE,
           "appealReason" TEXT NOT NULL,
           "additionalInfo" TEXT,
+          "videoUrl" TEXT,
           status TEXT DEFAULT 'open',
           "claimedBy" TEXT,
           "claimedAt" BIGINT,
@@ -213,6 +214,11 @@ export class PostgresDatabaseManager {
           "createdAt" BIGINT NOT NULL,
           "updatedAt" BIGINT
         )
+      `);
+
+      // Add videoUrl column if it doesn't exist (for existing databases)
+      await client.query(`
+        ALTER TABLE ban_appeals ADD COLUMN IF NOT EXISTS "videoUrl" TEXT
       `);
 
       await client.query(`
@@ -1247,8 +1253,8 @@ export class PostgresDatabaseManager {
     const now = Date.now();
 
     await this.pool.query(`
-      INSERT INTO ban_appeals (id, "playerGuid", "playerName", "userId", "banReason", "banDate", "banExpiry", "isPermanent", "serverName", "isGlobal", "appealReason", "additionalInfo", status, "createdAt", "updatedAt")
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      INSERT INTO ban_appeals (id, "playerGuid", "playerName", "userId", "banReason", "banDate", "banExpiry", "isPermanent", "serverName", "isGlobal", "appealReason", "additionalInfo", "videoUrl", status, "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     `, [
       id,
       appeal.playerGuid,
@@ -1262,6 +1268,7 @@ export class PostgresDatabaseManager {
       appeal.isGlobal || false,
       appeal.appealReason,
       appeal.additionalInfo || null,
+      appeal.videoUrl || null,
       'open',
       now,
       now
@@ -1380,6 +1387,7 @@ export class PostgresDatabaseManager {
       isGlobal: row.isGlobal,
       appealReason: row.appealReason,
       additionalInfo: row.additionalInfo,
+      videoUrl: row.videoUrl,
       status: row.status,
       claimedBy: row.claimedBy,
       claimedAt: row.claimedAt ? parseInt(row.claimedAt) : null,
