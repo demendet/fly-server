@@ -200,6 +200,50 @@ async function fetchSteamProfile(steam64) {
 let db;
 let stateManager;
 
+// Banned GUIDs cache - refreshes every 30 seconds
+let bannedGuidsCache = { guids: [], lastUpdated: 0 };
+const BANNED_CACHE_TTL = 30000; // 30 seconds
+
+async function getAllBannedGuids() {
+  const now = Date.now();
+  if (bannedGuidsCache.guids.length > 0 && (now - bannedGuidsCache.lastUpdated) < BANNED_CACHE_TTL) {
+    return bannedGuidsCache.guids;
+  }
+
+  const bannedGuids = new Set();
+  const sources = getApiSources();
+
+  for (const source of sources) {
+    try {
+      const managerServersResp = await fetchFromManager(source, '/servers');
+      const managerServers = Array.isArray(managerServersResp) ? managerServersResp : [];
+
+      for (const server of managerServers) {
+        const serverId = server.id || server.Id;
+        try {
+          const bans = await fetchFromManager(source, `/servers/${serverId}/bans`);
+          if (Array.isArray(bans)) {
+            for (const ban of bans) {
+              const isActive = ban.isActive ?? ban.IsActive ?? true;
+              if (isActive) {
+                const guid = (ban.playerGuid || ban.PlayerGuid || '').toUpperCase();
+                if (guid) bannedGuids.add(guid);
+              }
+            }
+          }
+        } catch (err) {
+          // Ignore individual server errors
+        }
+      }
+    } catch (err) {
+      // Ignore manager errors
+    }
+  }
+
+  bannedGuidsCache = { guids: Array.from(bannedGuids), lastUpdated: now };
+  return bannedGuidsCache.guids;
+}
+
 try {
   db = new PostgresDatabaseManager(env.DATABASE_URL);
   await db.initializeTables();
@@ -316,14 +360,15 @@ app.get('/', (req, res) => {
 
 app.get('/api/bulk', async (req, res) => {
   try {
-    const [players, sessions, servers, leaderboardMMR, leaderboardSR, records, stats] = await Promise.all([
+    const [players, sessions, servers, leaderboardMMR, leaderboardSR, records, stats, bannedGuids] = await Promise.all([
       db.getAllPlayers(),
       db.getRecentSessions(50),
       Promise.resolve(stateManager.getCachedServerData()),
       db.getTopPlayersByMMR(100),
       db.getTopPlayersBySR(100),
       db.getAllTrackRecords(),
-      db.getTotalFinalizedSessionsCount().then(count => ({ totalRaces: count }))
+      db.getTotalFinalizedSessionsCount().then(count => ({ totalRaces: count })),
+      getAllBannedGuids()
     ]);
     res.json({
       players,
@@ -331,8 +376,19 @@ app.get('/api/bulk', async (req, res) => {
       servers,
       leaderboards: { mmr: leaderboardMMR, sr: leaderboardSR },
       records,
-      stats
+      stats,
+      bannedGuids
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint to get all banned player GUIDs
+app.get('/api/banned-guids', async (req, res) => {
+  try {
+    const bannedGuids = await getAllBannedGuids();
+    res.json({ bannedGuids });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
