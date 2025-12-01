@@ -244,13 +244,17 @@ setInterval(() => {
 // Referrer check - only allow requests from our domains
 app.use('/api/', (req, res, next) => {
   const referer = req.headers.referer || req.headers.referrer || '';
+  const ip = req.ip || '';
   const validReferers = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost'];
 
-  // Allow if referer matches one of our domains
-  const isValid = validReferers.some(r => referer.startsWith(r));
+  // Allow localhost IPs (server itself, health checks, testing)
+  const isLocalhost = ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1';
+
+  // Allow if referer matches one of our domains OR it's localhost
+  const isValid = isLocalhost || validReferers.some(r => referer.startsWith(r));
 
   if (!isValid) {
-    console.log(`[REFERER BLOCKED] ${req.ip} - Referer: ${referer || 'none'}`);
+    console.log(`[REFERER BLOCKED] ${ip} - Referer: ${referer || 'none'}`);
     return res.status(403).json({ error: 'Forbidden' });
   }
   next();
