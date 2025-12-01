@@ -157,6 +157,30 @@ export class PostgresDatabaseManager {
         )
       `);
 
+      // Ban history table - tracks all bans and unbans
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ban_history (
+          id TEXT PRIMARY KEY,
+          "playerGuid" TEXT NOT NULL,
+          "playerName" TEXT NOT NULL,
+          action TEXT NOT NULL,
+          reason TEXT,
+          duration INTEGER,
+          "durationType" TEXT,
+          "isGlobal" BOOLEAN DEFAULT FALSE,
+          "isPermanent" BOOLEAN DEFAULT FALSE,
+          "expiresAt" BIGINT,
+          "performedBy" TEXT DEFAULT 'System',
+          "sourceManager" TEXT,
+          "createdAt" BIGINT NOT NULL
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_ban_history_player ON ban_history("playerGuid");
+        CREATE INDEX IF NOT EXISTS idx_ban_history_created ON ban_history("createdAt" DESC);
+      `);
+
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
       client.release();
@@ -1043,6 +1067,81 @@ export class PostgresDatabaseManager {
     } catch (err) {
       console.error('[LEADER] Failed to release leadership:', err.message);
     }
+  }
+
+  // Ban History Methods
+  async addBanHistory(entry) {
+    const id = `ban_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+
+    await this.pool.query(`
+      INSERT INTO ban_history (id, "playerGuid", "playerName", action, reason, duration, "durationType", "isGlobal", "isPermanent", "expiresAt", "performedBy", "sourceManager", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    `, [
+      id,
+      entry.playerGuid,
+      entry.playerName,
+      entry.action, // 'ban' or 'unban'
+      entry.reason || null,
+      entry.duration || null,
+      entry.durationType || null,
+      entry.isGlobal || false,
+      entry.isPermanent || false,
+      entry.expiresAt || null,
+      entry.performedBy || 'System',
+      entry.sourceManager || null,
+      now
+    ]);
+
+    return id;
+  }
+
+  async getBanHistory(playerGuid) {
+    const result = await this.pool.query(`
+      SELECT * FROM ban_history
+      WHERE "playerGuid" = $1
+      ORDER BY "createdAt" DESC
+    `, [playerGuid]);
+
+    return result.rows.map(row => ({
+      id: row.id,
+      playerGuid: row.playerGuid,
+      playerName: row.playerName,
+      action: row.action,
+      reason: row.reason,
+      duration: row.duration,
+      durationType: row.durationType,
+      isGlobal: row.isGlobal,
+      isPermanent: row.isPermanent,
+      expiresAt: row.expiresAt ? parseInt(row.expiresAt) : null,
+      performedBy: row.performedBy,
+      sourceManager: row.sourceManager,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null
+    }));
+  }
+
+  async getAllBanHistory(limit = 100) {
+    const result = await this.pool.query(`
+      SELECT * FROM ban_history
+      ORDER BY "createdAt" DESC
+      LIMIT $1
+    `, [limit]);
+
+    return result.rows.map(row => ({
+      id: row.id,
+      playerGuid: row.playerGuid,
+      playerName: row.playerName,
+      action: row.action,
+      reason: row.reason,
+      duration: row.duration,
+      durationType: row.durationType,
+      isGlobal: row.isGlobal,
+      isPermanent: row.isPermanent,
+      expiresAt: row.expiresAt ? parseInt(row.expiresAt) : null,
+      performedBy: row.performedBy,
+      sourceManager: row.sourceManager,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null
+    }));
   }
 
   async close() {

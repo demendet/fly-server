@@ -1193,6 +1193,21 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
     const results = [];
     const errors = [];
 
+    // Calculate expiry timestamp
+    let expiresAt = null;
+    const isPermanent = banData.durationType === 'Permanent' || !banData.duration;
+    if (!isPermanent && banData.duration) {
+      const now = Date.now();
+      const durationMs = {
+        'Minutes': banData.duration * 60 * 1000,
+        'Hours': banData.duration * 60 * 60 * 1000,
+        'Days': banData.duration * 24 * 60 * 60 * 1000,
+        'Months': banData.duration * 30 * 24 * 60 * 60 * 1000,
+        'Years': banData.duration * 365 * 24 * 60 * 60 * 1000
+      }[banData.durationType] || banData.duration * 60 * 60 * 1000;
+      expiresAt = now + durationMs;
+    }
+
     for (const source of sources) {
       try {
         const serversResp = await fetchFromManager(source, '/servers');
@@ -1200,14 +1215,39 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
         if (servers.length > 0) {
           const firstServer = servers[0];
           const serverId = firstServer.id || firstServer.Id;
-          const result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+          // Use full-ban endpoint if available, fallback to ban endpoint
+          const result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
             ...banData,
             isGlobal: true
-          });
+          }).catch(() => fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+            ...banData,
+            isGlobal: true
+          }));
           results.push({ source: source.id, result });
         }
       } catch (err) {
         errors.push({ source: source.id, error: err.message });
+      }
+    }
+
+    // Store ban history
+    if (results.length > 0) {
+      try {
+        await db.addBanHistory({
+          playerGuid: banData.playerGuid,
+          playerName: banData.playerName,
+          action: 'ban',
+          reason: banData.reason,
+          duration: banData.duration,
+          durationType: banData.durationType,
+          isGlobal: true,
+          isPermanent,
+          expiresAt,
+          performedBy: req.user?.email || 'Admin',
+          sourceManager: results.map(r => r.source).join(',')
+        });
+      } catch (histErr) {
+        console.error('[ADMIN] Failed to store ban history:', histErr.message);
       }
     }
 
@@ -1234,7 +1274,7 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
 
 app.post('/api/admin/unban', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { playerGuid } = req.body;
+    const { playerGuid, playerName } = req.body;
     const sources = getApiSources();
     const results = [];
     const errors = [];
@@ -1248,7 +1288,9 @@ app.post('/api/admin/unban', requireAuth, requireAdmin, async (req, res) => {
           const firstServer = servers[0];
           const serverId = firstServer.id || firstServer.Id;
           try {
-            const result = await fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', { playerGuid });
+            // Use full-unban endpoint if available, fallback to unban endpoint
+            const result = await fetchFromManager(source, `/servers/${serverId}/full-unban`, 'POST', { playerGuid })
+              .catch(() => fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', { playerGuid }));
             results.push({ source: source.id, result });
           } catch (err) {
             errors.push({ source: source.id, error: err.message });
@@ -1256,6 +1298,23 @@ app.post('/api/admin/unban', requireAuth, requireAdmin, async (req, res) => {
         }
       } catch (err) {
         errors.push({ source: source.id, error: err.message });
+      }
+    }
+
+    // Store unban history
+    if (results.length > 0) {
+      try {
+        await db.addBanHistory({
+          playerGuid,
+          playerName: playerName || 'Unknown',
+          action: 'unban',
+          reason: null,
+          isGlobal: true,
+          performedBy: req.user?.email || 'Admin',
+          sourceManager: results.map(r => r.source).join(',')
+        });
+      } catch (histErr) {
+        console.error('[ADMIN] Failed to store unban history:', histErr.message);
       }
     }
 
@@ -1281,6 +1340,131 @@ app.post('/api/admin/servers/:serverId/unban', requireAuth, requireAdmin, async 
     res.json(result);
   } catch (err) {
     console.error('[ADMIN] Unban player error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ban History Endpoints
+app.get('/api/admin/ban-history', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const history = await db.getAllBanHistory(200);
+    res.json(history);
+  } catch (err) {
+    console.error('[ADMIN] Get ban history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/ban-history/:playerGuid', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { playerGuid } = req.params;
+    const history = await db.getBanHistory(playerGuid);
+    res.json(history);
+  } catch (err) {
+    console.error('[ADMIN] Get player ban history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ban Sync Endpoint - syncs bans between all managers
+app.post('/api/admin/sync-bans', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const sources = getApiSources();
+    if (sources.length < 2) {
+      return res.json({ success: true, message: 'Only one manager configured, no sync needed', synced: 0 });
+    }
+
+    // Fetch bans from all managers
+    const managerBans = {};
+    for (const source of sources) {
+      try {
+        const serversResp = await fetchFromManager(source, '/servers');
+        const servers = Array.isArray(serversResp) ? serversResp : [];
+        if (servers.length > 0) {
+          const serverId = servers[0].id || servers[0].Id;
+          const bans = await fetchFromManager(source, `/servers/${serverId}/bans`);
+          managerBans[source.id] = {
+            source,
+            serverId,
+            bans: Array.isArray(bans) ? bans : []
+          };
+        }
+      } catch (err) {
+        console.error(`[SYNC] Failed to fetch bans from ${source.id}:`, err.message);
+      }
+    }
+
+    const managerIds = Object.keys(managerBans);
+    if (managerIds.length < 2) {
+      return res.json({ success: false, error: 'Could not reach multiple managers' });
+    }
+
+    // Find and sync missing bans
+    const syncResults = [];
+
+    for (const sourceManagerId of managerIds) {
+      const sourceBans = managerBans[sourceManagerId].bans;
+
+      for (const targetManagerId of managerIds) {
+        if (sourceManagerId === targetManagerId) continue;
+
+        const targetBans = managerBans[targetManagerId].bans;
+        const targetGuids = new Set(targetBans.map(b => b.playerGuid?.toUpperCase() || b.PlayerGuid?.toUpperCase()));
+
+        // Find bans missing in target
+        const missingBans = sourceBans.filter(ban => {
+          const guid = (ban.playerGuid || ban.PlayerGuid || '').toUpperCase();
+          return guid && !targetGuids.has(guid);
+        });
+
+        // Sync missing bans to target
+        for (const ban of missingBans) {
+          try {
+            const targetSource = managerBans[targetManagerId].source;
+            const targetServerId = managerBans[targetManagerId].serverId;
+
+            await fetchFromManager(targetSource, `/servers/${targetServerId}/ban`, 'POST', {
+              PlayerName: ban.playerName || ban.PlayerName,
+              PlayerGuid: ban.playerGuid || ban.PlayerGuid,
+              Reason: ban.reason || ban.Reason || 'Synced from another manager',
+              Duration: 0,
+              DurationType: 'Permanent',
+              IsGlobal: true
+            });
+
+            syncResults.push({
+              from: sourceManagerId,
+              to: targetManagerId,
+              playerGuid: ban.playerGuid || ban.PlayerGuid,
+              playerName: ban.playerName || ban.PlayerName,
+              success: true
+            });
+
+            console.log(`[SYNC] Synced ban for ${ban.playerName || ban.PlayerName} from ${sourceManagerId} to ${targetManagerId}`);
+          } catch (err) {
+            syncResults.push({
+              from: sourceManagerId,
+              to: targetManagerId,
+              playerGuid: ban.playerGuid || ban.PlayerGuid,
+              success: false,
+              error: err.message
+            });
+          }
+        }
+      }
+    }
+
+    const successCount = syncResults.filter(r => r.success).length;
+    console.log(`[SYNC] Ban sync completed: ${successCount} bans synced`);
+
+    res.json({
+      success: true,
+      synced: successCount,
+      total: syncResults.length,
+      results: syncResults
+    });
+  } catch (err) {
+    console.error('[ADMIN] Ban sync error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
