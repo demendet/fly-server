@@ -310,6 +310,15 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_player_warnings_created ON player_warnings("createdAt" DESC);
       `);
 
+      // Migration: Add Steam avatar columns if they don't exist (for existing databases)
+      try {
+        await client.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS "steamAvatarUrl" TEXT`);
+        await client.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS "steamAvatarUpdated" BIGINT`);
+        console.log('[POSTGRES] Steam avatar columns migration complete');
+      } catch (migrationErr) {
+        console.log('[POSTGRES] Steam avatar migration:', migrationErr.message);
+      }
+
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
       client.release();
