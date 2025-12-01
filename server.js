@@ -200,48 +200,81 @@ async function fetchSteamProfile(steam64) {
 let db;
 let stateManager;
 
-// Banned GUIDs cache - refreshes every 30 seconds
-let bannedGuidsCache = { guids: [], lastUpdated: 0 };
-const BANNED_CACHE_TTL = 30000; // 30 seconds
+// Banned GUIDs cache - background sync every 60 seconds, ALWAYS serve from cache
+let bannedGuidsCache = { guids: [], lastUpdated: 0, syncing: false };
+const BANNED_CACHE_SYNC_INTERVAL = 60000; // Sync every 60 seconds in background
 
-async function getAllBannedGuids() {
-  const now = Date.now();
-  if (bannedGuidsCache.guids.length > 0 && (now - bannedGuidsCache.lastUpdated) < BANNED_CACHE_TTL) {
-    return bannedGuidsCache.guids;
+// ALWAYS returns from cache instantly - never blocks on network requests
+function getAllBannedGuids() {
+  return bannedGuidsCache.guids;
+}
+
+// Background sync function - runs independently, never blocks API requests
+async function syncBannedGuidsBackground() {
+  if (bannedGuidsCache.syncing) {
+    return; // Already syncing
   }
 
-  const bannedGuids = new Set();
-  const sources = getApiSources();
+  bannedGuidsCache.syncing = true;
+  const startTime = Date.now();
 
-  for (const source of sources) {
-    try {
-      const managerServersResp = await fetchFromManager(source, '/servers');
-      const managerServers = Array.isArray(managerServersResp) ? managerServersResp : [];
+  try {
+    const bannedGuids = new Set();
+    const sources = getApiSources();
 
-      for (const server of managerServers) {
-        const serverId = server.id || server.Id;
-        try {
-          const bans = await fetchFromManager(source, `/servers/${serverId}/bans`);
-          if (Array.isArray(bans)) {
-            for (const ban of bans) {
-              const isActive = ban.isActive ?? ban.IsActive ?? true;
-              if (isActive) {
-                const guid = (ban.playerGuid || ban.PlayerGuid || '').toUpperCase();
-                if (guid) bannedGuids.add(guid);
+    // Fetch from all managers in parallel for speed
+    await Promise.all(sources.map(async (source) => {
+      try {
+        const managerServersResp = await fetchFromManager(source, '/servers');
+        const managerServers = Array.isArray(managerServersResp) ? managerServersResp : [];
+
+        // Fetch bans from all servers in parallel
+        await Promise.all(managerServers.map(async (server) => {
+          const serverId = server.id || server.Id;
+          try {
+            const bans = await fetchFromManager(source, `/servers/${serverId}/bans`);
+            if (Array.isArray(bans)) {
+              for (const ban of bans) {
+                const isActive = ban.isActive ?? ban.IsActive ?? true;
+                if (isActive) {
+                  const guid = (ban.playerGuid || ban.PlayerGuid || '').toUpperCase();
+                  if (guid) bannedGuids.add(guid);
+                }
               }
             }
+          } catch (err) {
+            // Ignore individual server errors
           }
-        } catch (err) {
-          // Ignore individual server errors
-        }
+        }));
+      } catch (err) {
+        // Ignore manager errors
       }
-    } catch (err) {
-      // Ignore manager errors
-    }
-  }
+    }));
 
-  bannedGuidsCache = { guids: Array.from(bannedGuids), lastUpdated: now };
-  return bannedGuidsCache.guids;
+    const newGuids = Array.from(bannedGuids);
+    const elapsed = Date.now() - startTime;
+
+    // Only log if there's a change or it's been a while
+    if (newGuids.length !== bannedGuidsCache.guids.length) {
+      console.log(`[BAN-SYNC] Updated: ${newGuids.length} banned GUIDs (took ${elapsed}ms)`);
+    }
+
+    bannedGuidsCache = { guids: newGuids, lastUpdated: Date.now(), syncing: false };
+  } catch (err) {
+    console.error('[BAN-SYNC] Error:', err.message);
+    bannedGuidsCache.syncing = false;
+  }
+}
+
+// Start background ban sync loop
+function startBannedGuidsSyncLoop() {
+  console.log('[BAN-SYNC] Starting background sync (every 60s)...');
+
+  // Initial sync
+  syncBannedGuidsBackground();
+
+  // Schedule recurring sync
+  setInterval(syncBannedGuidsBackground, BANNED_CACHE_SYNC_INTERVAL);
 }
 
 try {
@@ -2390,6 +2423,9 @@ app.listen(PORT, async () => {
   console.log(`[SERVER] Machine ID: ${machineId}`);
 
   await db.initLeaderTable();
+
+  // Start background ban sync on ALL instances (needed for API responses)
+  startBannedGuidsSyncLoop();
 
   let isLeader = false;
   let updateLoopInterval = null;
