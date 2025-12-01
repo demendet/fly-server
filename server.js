@@ -1248,6 +1248,7 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
 
     // Store ban history
     if (results.length > 0) {
+      const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
       try {
         await db.addBanHistory({
           playerGuid: banData.playerGuid,
@@ -1259,8 +1260,9 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
           isGlobal: true,
           isPermanent,
           expiresAt,
-          performedBy: req.user?.email || 'Admin',
-          sourceManager: results.map(r => r.source).join(',')
+          performedBy: adminName,
+          sourceManager: results.map(r => r.source).join(','),
+          serverName: null // Global ban - all servers
         });
       } catch (histErr) {
         console.error('[ADMIN] Failed to store ban history:', histErr.message);
@@ -1302,6 +1304,7 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
 
     const results = [];
     const errors = [];
+    let serverName = null;
 
     // Try all managers - the one that owns this server will succeed
     for (const source of sources) {
@@ -1309,12 +1312,15 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
         // First check if this manager has this server
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
-        const hasServer = servers.some(s => (s.id || s.Id) === serverId);
+        const server = servers.find(s => (s.id || s.Id) === serverId);
 
-        if (!hasServer) {
+        if (!server) {
           console.log(`[ADMIN] Server ${serverId} not found on ${source.id}, skipping`);
           continue;
         }
+
+        // Capture server name for ban history
+        serverName = server.name || server.Name || serverName;
 
         // This manager has the server, do the ban
         let result;
@@ -1324,16 +1330,16 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
             isGlobal,
             bannedBy: adminName
           });
-          console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId} via full-ban on ${source.id}`);
+          console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverName} via full-ban on ${source.id}`);
         } catch (fullBanErr) {
           console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying basic ban`);
           result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
             ...banData,
             isGlobal
           });
-          console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverId} via basic ban on ${source.id}`);
+          console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverName} via basic ban on ${source.id}`);
         }
-        results.push({ source: source.id, result });
+        results.push({ source: source.id, result, serverName });
       } catch (err) {
         console.error(`[ADMIN] Ban failed on ${source.id}: ${err.message}`);
         errors.push({ source: source.id, error: err.message });
@@ -1347,9 +1353,44 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
       return res.status(400).json({ success: false, error: errorMsg, errors });
     }
 
+    // Store ban history with server name
+    try {
+      // Calculate expiry for history
+      let expiresAt = null;
+      const isPermanent = banData.durationType === 'Permanent' || !banData.duration;
+      if (!isPermanent && banData.duration) {
+        const now = Date.now();
+        const durationMs = {
+          'Minutes': banData.duration * 60 * 1000,
+          'Hours': banData.duration * 60 * 60 * 1000,
+          'Days': banData.duration * 24 * 60 * 60 * 1000,
+          'Months': banData.duration * 30 * 24 * 60 * 60 * 1000,
+          'Years': banData.duration * 365 * 24 * 60 * 60 * 1000
+        }[banData.durationType] || banData.duration * 60 * 60 * 1000;
+        expiresAt = now + durationMs;
+      }
+
+      await db.addBanHistory({
+        playerGuid: banData.playerGuid,
+        playerName: banData.playerName,
+        action: 'ban',
+        reason: banData.reason,
+        duration: banData.duration,
+        durationType: banData.durationType,
+        isGlobal: false,
+        isPermanent,
+        expiresAt,
+        performedBy: adminName,
+        sourceManager: results.map(r => r.source).join(','),
+        serverName: serverName // Store which server they were banned from
+      });
+    } catch (histErr) {
+      console.error('[ADMIN] Failed to store ban history:', histErr.message);
+    }
+
     res.json({
       success: true,
-      message: `Banned on ${results.length} manager(s)`,
+      message: `Banned on ${serverName || 'server'}`,
       results,
       errors: errors.length > 0 ? errors : undefined
     });

@@ -172,6 +172,7 @@ export class PostgresDatabaseManager {
           "expiresAt" BIGINT,
           "performedBy" TEXT DEFAULT 'System',
           "sourceManager" TEXT,
+          "serverName" TEXT,
           "createdAt" BIGINT NOT NULL
         )
       `);
@@ -180,6 +181,11 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_ban_history_player ON ban_history("playerGuid");
         CREATE INDEX IF NOT EXISTS idx_ban_history_created ON ban_history("createdAt" DESC);
       `);
+
+      // Migration: Add serverName column if it doesn't exist
+      await client.query(`
+        ALTER TABLE ban_history ADD COLUMN IF NOT EXISTS "serverName" TEXT;
+      `).catch(() => {}); // Ignore if column exists or alter fails
 
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
@@ -1075,8 +1081,8 @@ export class PostgresDatabaseManager {
     const now = Date.now();
 
     await this.pool.query(`
-      INSERT INTO ban_history (id, "playerGuid", "playerName", action, reason, duration, "durationType", "isGlobal", "isPermanent", "expiresAt", "performedBy", "sourceManager", "createdAt")
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      INSERT INTO ban_history (id, "playerGuid", "playerName", action, reason, duration, "durationType", "isGlobal", "isPermanent", "expiresAt", "performedBy", "sourceManager", "serverName", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
     `, [
       id,
       entry.playerGuid,
@@ -1090,6 +1096,7 @@ export class PostgresDatabaseManager {
       entry.expiresAt || null,
       entry.performedBy || 'System',
       entry.sourceManager || null,
+      entry.serverName || null,
       now
     ]);
 
@@ -1116,6 +1123,7 @@ export class PostgresDatabaseManager {
       expiresAt: row.expiresAt ? parseInt(row.expiresAt) : null,
       performedBy: row.performedBy,
       sourceManager: row.sourceManager,
+      serverName: row.serverName,
       createdAt: row.createdAt ? parseInt(row.createdAt) : null
     }));
   }
