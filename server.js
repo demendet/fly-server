@@ -210,7 +210,7 @@ try {
   process.exit(1);
 }
 
-const allowedOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'];
+const allowedOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
 app.use(compression());
 app.use(cors({
   origin: (origin, callback) => {
@@ -241,11 +241,11 @@ setInterval(() => {
   }
 }, 300000);
 
-// Origin/Referer check - only allow requests from our domains
+// Origin/Referer check - only allow requests from our domains or trusted API servers
 app.use('/api/', (req, res, next) => {
   const origin = req.headers.origin || '';
   const referer = req.headers.referer || req.headers.referrer || '';
-  const validOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost'];
+  const validOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
 
   // Check if request came through Cloudflare Tunnel (has CF headers)
   const isTunneled = req.headers['cf-connecting-ip'] || req.headers['cf-ray'];
@@ -262,8 +262,12 @@ app.use('/api/', (req, res, next) => {
   // Check Referer header (fallback)
   const isValidReferer = validOrigins.some(r => referer.startsWith(r));
 
-  // Allow if origin OR referer matches, OR it's real localhost
-  const isValid = isRealLocalhost || isValidOrigin || isValidReferer;
+  // Check for valid API key (for server-to-server calls from Manager API)
+  const apiKey = req.headers['x-api-key'];
+  const hasValidApiKey = apiKey && (apiKey === env.MXBIKES_API_KEY_1 || apiKey === env.MXBIKES_API_KEY_2);
+
+  // Allow if origin OR referer matches, OR it's real localhost, OR has valid API key
+  const isValid = isRealLocalhost || isValidOrigin || isValidReferer || hasValidApiKey;
 
   if (!isValid) {
     console.log(`[BLOCKED] ${realIp} - Origin: ${origin || 'none'} - Referer: ${referer || 'none'} - Tunneled: ${!!isTunneled}`);
