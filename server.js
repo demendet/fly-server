@@ -244,17 +244,22 @@ setInterval(() => {
 // Referrer check - only allow requests from our domains
 app.use('/api/', (req, res, next) => {
   const referer = req.headers.referer || req.headers.referrer || '';
-  const ip = req.ip || '';
   const validReferers = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost'];
 
-  // Allow localhost IPs (server itself, health checks, testing)
-  const isLocalhost = ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1';
+  // Check if request came through Cloudflare Tunnel (has CF headers)
+  const isTunneled = req.headers['cf-connecting-ip'] || req.headers['cf-ray'];
 
-  // Allow if referer matches one of our domains OR it's localhost
-  const isValid = isLocalhost || validReferers.some(r => referer.startsWith(r));
+  // Get real IP - use Cloudflare's header if tunneled, otherwise req.ip
+  const realIp = req.headers['cf-connecting-ip'] || req.ip || '';
+
+  // Only allow localhost bypass for NON-tunneled requests (actual local requests)
+  const isRealLocalhost = !isTunneled && (realIp === '::1' || realIp === '127.0.0.1' || realIp === '::ffff:127.0.0.1');
+
+  // Allow if referer matches one of our domains OR it's real localhost
+  const isValid = isRealLocalhost || validReferers.some(r => referer.startsWith(r));
 
   if (!isValid) {
-    console.log(`[REFERER BLOCKED] ${ip} - Referer: ${referer || 'none'}`);
+    console.log(`[REFERER BLOCKED] ${realIp} - Referer: ${referer || 'none'} - Tunneled: ${!!isTunneled}`);
     return res.status(403).json({ error: 'Forbidden' });
   }
   next();
