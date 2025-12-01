@@ -814,6 +814,24 @@ app.post('/api/steam/verify', async (req, res) => {
   }
 });
 
+// Server-side Steam avatar cache (1 hour TTL)
+const steamAvatarCache = new Map();
+const STEAM_AVATAR_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+function getCachedSteamAvatar(guid) {
+  const cached = steamAvatarCache.get(guid);
+  if (!cached) return undefined;
+  if (Date.now() - cached.timestamp > STEAM_AVATAR_CACHE_TTL) {
+    steamAvatarCache.delete(guid);
+    return undefined;
+  }
+  return cached.data;
+}
+
+function setCachedSteamAvatar(guid, data) {
+  steamAvatarCache.set(guid, { data, timestamp: Date.now() });
+}
+
 app.post('/api/steam/avatars', async (req, res) => {
   try {
     const { guids } = req.body;
@@ -823,44 +841,81 @@ app.post('/api/steam/avatars', async (req, res) => {
     }
 
     const limitedGuids = guids.slice(0, 100);
+    const avatars = {};
+    const uncachedGuids = [];
 
-    const steam64s = limitedGuids
-      .map(guid => ({ guid: guid.toUpperCase(), steam64: guidToSteam64(guid.toUpperCase()) }))
+    // Check cache first
+    for (const guid of limitedGuids) {
+      const normalized = guid.toUpperCase();
+      const cached = getCachedSteamAvatar(normalized);
+      if (cached !== undefined) {
+        if (cached !== null) {
+          avatars[normalized] = cached;
+        }
+      } else {
+        uncachedGuids.push(normalized);
+      }
+    }
+
+    // If all cached, return immediately
+    if (uncachedGuids.length === 0) {
+      return res.json({ avatars });
+    }
+
+    const steam64s = uncachedGuids
+      .map(guid => ({ guid, steam64: guidToSteam64(guid) }))
       .filter(item => item.steam64);
 
     if (steam64s.length === 0) {
-      return res.json({ avatars: {} });
+      // Cache null for invalid GUIDs
+      uncachedGuids.forEach(guid => setCachedSteamAvatar(guid, null));
+      return res.json({ avatars });
     }
 
     const steamIds = steam64s.map(s => s.steam64).join(',');
     const response = await fetch(
-      `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${env.STEAM_API_KEY}&steamids=${steamIds}`
+      `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${env.STEAM_API_KEY}&steamids=${steamIds}`,
+      { signal: AbortSignal.timeout(8000) } // 8s timeout
     );
 
     if (!response.ok) {
-      throw new Error('Failed to fetch Steam profiles');
+      // Cache null for failed requests to prevent retry spam
+      uncachedGuids.forEach(guid => setCachedSteamAvatar(guid, null));
+      return res.json({ avatars }); // Return what we have from cache
     }
 
     const data = await response.json();
     const players = data.response?.players || [];
 
-    const avatars = {};
+    // Build lookup map
+    const playerMap = new Map();
     for (const player of players) {
       const guid = steam64ToGuid(player.steamid);
       if (guid) {
-        avatars[guid] = {
+        const avatarData = {
           avatar: player.avatar,
           avatarMedium: player.avatarmedium,
           avatarFull: player.avatarfull,
           displayName: player.personaname
         };
+        playerMap.set(guid, avatarData);
+      }
+    }
+
+    // Update cache and response
+    for (const guid of uncachedGuids) {
+      const avatarData = playerMap.get(guid) || null;
+      setCachedSteamAvatar(guid, avatarData);
+      if (avatarData) {
+        avatars[guid] = avatarData;
       }
     }
 
     res.json({ avatars });
   } catch (err) {
+    // Silent failure - return what we have
     console.error('[STEAM] Batch avatars error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.json({ avatars: {} });
   }
 });
 
