@@ -1160,14 +1160,22 @@ app.get('/api/admin/bans', requireAuth, requireModerator, async (req, res) => {
       for (const ban of uniqueBans) {
         const banHistory = await db.getBanHistory(ban.playerGuid);
         if (banHistory && banHistory.length > 0) {
-          // Find the matching ban entry by looking for closest timestamp
-          const matchingEntry = banHistory.find(h =>
-            h.action === 'ban' &&
-            h.reason === ban.reason
-          ) || banHistory.find(h => h.action === 'ban');
+          // Find the most recent ban entry
+          const banEntries = banHistory.filter(h => h.action === 'ban');
+          if (banEntries.length > 0) {
+            // First try to match by reason
+            let matchingEntry = banEntries.find(h => h.reason === ban.reason);
+            // If no match by reason, use the most recent ban (already sorted by createdAt DESC)
+            if (!matchingEntry) {
+              matchingEntry = banEntries[0];
+            }
 
-          if (matchingEntry && matchingEntry.performedBy && matchingEntry.performedBy !== 'System') {
-            ban.bannedBy = matchingEntry.performedBy;
+            if (matchingEntry?.performedBy &&
+                matchingEntry.performedBy !== 'System' &&
+                matchingEntry.performedBy !== 'WebAPI' &&
+                matchingEntry.performedBy !== 'WEBAPI') {
+              ban.bannedBy = matchingEntry.performedBy;
+            }
           }
         }
       }

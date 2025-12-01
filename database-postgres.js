@@ -1106,7 +1106,7 @@ export class PostgresDatabaseManager {
   async getBanHistory(playerGuid) {
     const result = await this.pool.query(`
       SELECT * FROM ban_history
-      WHERE "playerGuid" = $1
+      WHERE UPPER("playerGuid") = UPPER($1)
       ORDER BY "createdAt" DESC
     `, [playerGuid]);
 
