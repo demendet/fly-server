@@ -1218,12 +1218,14 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
           // Use full-ban endpoint if available, fallback to ban endpoint
           let result;
           let usedEndpoint = 'full-ban';
+          const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
           try {
             result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
               ...banData,
-              isGlobal: true
+              isGlobal: true,
+              bannedBy: adminName
             });
-            console.log(`[ADMIN] Ban succeeded via full-ban on ${source.id}`);
+            console.log(`[ADMIN] Ban succeeded via full-ban on ${source.id} by ${adminName}`);
           } catch (fullBanErr) {
             console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying ban endpoint`);
             usedEndpoint = 'ban';
