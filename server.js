@@ -1219,21 +1219,22 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
           let result;
           let usedEndpoint = 'full-ban';
           const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+          const isGlobal = banData.isGlobal !== false; // Default to true if not explicitly false
           try {
             result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
               ...banData,
-              isGlobal: true,
+              isGlobal,
               bannedBy: adminName
             });
-            console.log(`[ADMIN] Ban succeeded via full-ban on ${source.id} by ${adminName}`);
+            console.log(`[ADMIN] Ban succeeded via full-ban on ${source.id} by ${adminName} (global: ${isGlobal})`);
           } catch (fullBanErr) {
             console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying ban endpoint`);
             usedEndpoint = 'ban';
             result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
               ...banData,
-              isGlobal: true
+              isGlobal
             });
-            console.log(`[ADMIN] Ban succeeded via ban on ${source.id}`);
+            console.log(`[ADMIN] Ban succeeded via ban on ${source.id} (global: ${isGlobal})`);
           }
           results.push({ source: source.id, result, endpoint: usedEndpoint });
         } else {
