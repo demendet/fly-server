@@ -1312,17 +1312,19 @@ export class PostgresDatabaseManager {
 
   async claimAppeal(id, adminName) {
     const now = Date.now();
-    await this.pool.query(`
+    const result = await this.pool.query(`
       UPDATE ban_appeals SET status = 'claimed', "claimedBy" = $1, "claimedAt" = $2, "updatedAt" = $3
-      WHERE id = $4
+      WHERE id = $4 AND status = 'open'
+      RETURNING *
     `, [adminName, now, now, id]);
+    return result.rows.length > 0 ? this.rowToAppeal(result.rows[0]) : null;
   }
 
   async resolveAppeal(id, adminName, accepted, resolution, cooldownHours = 24) {
     const now = Date.now();
     const cooldownUntil = accepted ? null : now + (cooldownHours * 60 * 60 * 1000);
 
-    await this.pool.query(`
+    const result = await this.pool.query(`
       UPDATE ban_appeals SET
         status = $1,
         "resolvedBy" = $2,
@@ -1331,7 +1333,9 @@ export class PostgresDatabaseManager {
         "cooldownUntil" = $5,
         "updatedAt" = $6
       WHERE id = $7
+      RETURNING *
     `, [accepted ? 'accepted' : 'denied', adminName, now, resolution, cooldownUntil, now, id]);
+    return result.rows.length > 0 ? this.rowToAppeal(result.rows[0]) : null;
   }
 
   async canUserAppeal(userId, playerGuid) {
@@ -1448,17 +1452,19 @@ export class PostgresDatabaseManager {
 
   async claimReport(id, adminName) {
     const now = Date.now();
-    await this.pool.query(`
+    const result = await this.pool.query(`
       UPDATE player_reports SET status = 'claimed', "claimedBy" = $1, "claimedAt" = $2, "updatedAt" = $3
-      WHERE id = $4
+      WHERE id = $4 AND status = 'open'
+      RETURNING *
     `, [adminName, now, now, id]);
+    return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
   }
 
   async resolveReport(id, adminName, actionTaken, resolution) {
     const now = Date.now();
     const status = actionTaken === 'no_action' ? 'no_action' : 'action_taken';
 
-    await this.pool.query(`
+    const result = await this.pool.query(`
       UPDATE player_reports SET
         status = $1,
         "resolvedBy" = $2,
@@ -1467,7 +1473,9 @@ export class PostgresDatabaseManager {
         "actionTaken" = $5,
         "updatedAt" = $6
       WHERE id = $7
+      RETURNING *
     `, [status, adminName, now, resolution, actionTaken, now, id]);
+    return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
   }
 
   rowToReport(row) {
