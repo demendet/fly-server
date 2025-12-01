@@ -1056,6 +1056,9 @@ app.get('/api/player/:guid/ban-status', async (req, res) => {
               });
 
               if (playerBan) {
+                const isGlobal = playerBan.isGlobal ?? playerBan.IsGlobal ?? false;
+                const serverName = server.name || server.Name || 'Unknown Server';
+
                 banInfo = {
                   isBanned: true,
                   playerGuid: upperGuid,
@@ -1065,7 +1068,9 @@ app.get('/api/player/:guid/ban-status', async (req, res) => {
                   expiresAt: playerBan.expiresAt || playerBan.ExpiresAt || null,
                   bannedBy: playerBan.bannedBy || playerBan.BannedBy || 'Admin',
                   durationDescription: playerBan.durationDescription || playerBan.DurationDescription || null,
-                  isActive: playerBan.isActive ?? playerBan.IsActive ?? true
+                  isActive: playerBan.isActive ?? playerBan.IsActive ?? true,
+                  isGlobal: isGlobal,
+                  serverName: isGlobal ? null : serverName
                 };
                 // Found ban, no need to continue
                 break;
@@ -1078,6 +1083,31 @@ app.get('/api/player/:guid/ban-status', async (req, res) => {
         if (banInfo) break;
       } catch (err) {
         // Ignore manager errors
+      }
+    }
+
+    // Cross-reference with ban_history to get correct bannedBy
+    if (banInfo && db) {
+      try {
+        const banHistory = await db.getBanHistory(upperGuid);
+        if (banHistory && banHistory.length > 0) {
+          const latestBan = banHistory.find(h => h.action === 'ban');
+          if (latestBan?.performedBy &&
+              latestBan.performedBy !== 'System' &&
+              latestBan.performedBy !== 'WebAPI' &&
+              latestBan.performedBy !== 'WEBAPI') {
+            banInfo.bannedBy = latestBan.performedBy;
+          }
+          // Also get isGlobal from history if available
+          if (latestBan?.isGlobal !== undefined) {
+            banInfo.isGlobal = latestBan.isGlobal;
+          }
+          if (latestBan?.serverName && !banInfo.isGlobal) {
+            banInfo.serverName = latestBan.serverName;
+          }
+        }
+      } catch (histErr) {
+        // Ignore history lookup errors
       }
     }
 
