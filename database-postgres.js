@@ -271,6 +271,7 @@ export class PostgresDatabaseManager {
           message TEXT NOT NULL,
           link TEXT,
           read BOOLEAN DEFAULT FALSE,
+          "relatedId" TEXT,
           "createdAt" BIGINT NOT NULL
         )
       `);
@@ -279,6 +280,12 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications("userId");
         CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications("userId", read) WHERE read = FALSE;
         CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications("createdAt" DESC);
+        CREATE INDEX IF NOT EXISTS idx_notifications_related ON notifications("relatedId");
+      `);
+
+      // Migration: Add relatedId column if it doesn't exist (for existing databases)
+      await client.query(`
+        ALTER TABLE notifications ADD COLUMN IF NOT EXISTS "relatedId" TEXT
       `);
 
       console.log('[POSTGRES] All tables initialized successfully');
@@ -1513,11 +1520,15 @@ export class PostgresDatabaseManager {
   }
 
   async deleteReport(id) {
+    // Delete related notifications first
+    await this.pool.query(`DELETE FROM notifications WHERE "relatedId" = $1`, [id]);
     const result = await this.pool.query(`DELETE FROM player_reports WHERE id = $1 RETURNING id`, [id]);
     return result.rows.length > 0;
   }
 
   async deleteAppeal(id) {
+    // Delete related notifications first
+    await this.pool.query(`DELETE FROM notifications WHERE "relatedId" = $1`, [id]);
     const result = await this.pool.query(`DELETE FROM ban_appeals WHERE id = $1 RETURNING id`, [id]);
     return result.rows.length > 0;
   }
@@ -1554,8 +1565,8 @@ export class PostgresDatabaseManager {
     const now = Date.now();
 
     await this.pool.query(`
-      INSERT INTO notifications (id, "userId", type, title, message, link, read, "createdAt")
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO notifications (id, "userId", type, title, message, link, read, "relatedId", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `, [
       id,
       notification.userId,
@@ -1564,6 +1575,7 @@ export class PostgresDatabaseManager {
       notification.message,
       notification.link || null,
       false,
+      notification.relatedId || null,
       now
     ]);
 

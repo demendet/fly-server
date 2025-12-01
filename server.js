@@ -986,7 +986,8 @@ app.post('/api/admin/ban-appeals/:id/claim', requireAuth, requireModerator, asyn
         type: 'appeal_claimed',
         title: 'Ban Appeal Under Review',
         message: `Your ban appeal is now being reviewed by ${adminName}.`,
-        link: '/ban-appeal'
+        link: '/ban-appeal',
+        relatedId: appeal.id
       });
     } catch (notifErr) {
       console.error('[ADMIN] Failed to create claim notification:', notifErr.message);
@@ -1058,7 +1059,8 @@ app.post('/api/admin/ban-appeals/:id/resolve', requireAuth, requireAdmin, async 
         message: accepted
           ? 'Your ban appeal was accepted. You have been unbanned.'
           : `Your ban appeal was denied. ${resolution || ''}`,
-        link: '/ban-appeal'
+        link: '/ban-appeal',
+        relatedId: appeal.id
       });
     } catch (notifErr) {
       console.error('[ADMIN] Notification error:', notifErr.message);
@@ -1156,7 +1158,8 @@ app.post('/api/admin/reports/:id/claim', requireAuth, requireModerator, async (r
         type: 'report_claimed',
         title: 'Player Report Under Review',
         message: `Your report against ${report.offenderName} is now being reviewed by ${adminName}.`,
-        link: '/report'
+        link: '/report',
+        relatedId: report.id
       });
     } catch (notifErr) {
       console.error('[ADMIN] Failed to create claim notification:', notifErr.message);
@@ -1197,7 +1200,8 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
         type: 'report_resolved',
         title: 'Player Report Resolved',
         message: `Your report against ${report.offenderName} has been reviewed and ${actionText}.`,
-        link: '/report'
+        link: '/report',
+        relatedId: report.id
       });
     } catch (notifErr) {
       console.error('[ADMIN] Notification error:', notifErr.message);
