@@ -1250,6 +1250,28 @@ app.get('/api/notifications/unread-count', requireAuth, async (req, res) => {
   }
 });
 
+// Get unread notification counts by type (for sidebar badges)
+app.get('/api/notifications/unread-by-type', requireAuth, async (req, res) => {
+  try {
+    const counts = await db.getUnreadNotificationCountsByType(req.userId);
+    res.json(counts);
+  } catch (err) {
+    console.error('[NOTIFICATIONS] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get open appeals and reports count (for sidebar badges)
+app.get('/api/admin/pending-counts', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const counts = await db.getAdminPendingCounts();
+    res.json(counts);
+  } catch (err) {
+    console.error('[ADMIN] Pending counts error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Mark a notification as read
 app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
   try {

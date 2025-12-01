@@ -1599,6 +1599,33 @@ export class PostgresDatabaseManager {
     return parseInt(result.rows[0].count);
   }
 
+  async getUnreadNotificationCountsByType(userId) {
+    const result = await this.pool.query(`
+      SELECT
+        SUM(CASE WHEN type LIKE '%appeal%' THEN 1 ELSE 0 END) as appeals,
+        SUM(CASE WHEN type LIKE '%report%' THEN 1 ELSE 0 END) as reports
+      FROM notifications
+      WHERE "userId" = $1 AND read = FALSE
+    `, [userId]);
+
+    return {
+      appeals: parseInt(result.rows[0].appeals) || 0,
+      reports: parseInt(result.rows[0].reports) || 0
+    };
+  }
+
+  async getAdminPendingCounts() {
+    const [appealsResult, reportsResult] = await Promise.all([
+      this.pool.query(`SELECT COUNT(*) as count FROM ban_appeals WHERE status IN ('open', 'claimed')`),
+      this.pool.query(`SELECT COUNT(*) as count FROM player_reports WHERE status IN ('open', 'claimed')`)
+    ]);
+
+    return {
+      appeals: parseInt(appealsResult.rows[0].count) || 0,
+      reports: parseInt(reportsResult.rows[0].count) || 0
+    };
+  }
+
   async markNotificationRead(id) {
     await this.pool.query('UPDATE notifications SET read = TRUE WHERE id = $1', [id]);
   }
