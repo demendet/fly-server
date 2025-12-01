@@ -187,6 +187,94 @@ export class PostgresDatabaseManager {
         ALTER TABLE ban_history ADD COLUMN IF NOT EXISTS "serverName" TEXT;
       `).catch(() => {}); // Ignore if column exists or alter fails
 
+      // Ban Appeals table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ban_appeals (
+          id TEXT PRIMARY KEY,
+          "appealIndex" SERIAL,
+          "playerGuid" TEXT NOT NULL,
+          "playerName" TEXT NOT NULL,
+          "userId" TEXT NOT NULL,
+          "banReason" TEXT,
+          "banDate" BIGINT,
+          "banExpiry" BIGINT,
+          "isPermanent" BOOLEAN DEFAULT FALSE,
+          "serverName" TEXT,
+          "isGlobal" BOOLEAN DEFAULT FALSE,
+          "appealReason" TEXT NOT NULL,
+          "additionalInfo" TEXT,
+          status TEXT DEFAULT 'open',
+          "claimedBy" TEXT,
+          "claimedAt" BIGINT,
+          "resolvedBy" TEXT,
+          "resolvedAt" BIGINT,
+          resolution TEXT,
+          "cooldownUntil" BIGINT,
+          "createdAt" BIGINT NOT NULL,
+          "updatedAt" BIGINT
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_ban_appeals_user ON ban_appeals("userId");
+        CREATE INDEX IF NOT EXISTS idx_ban_appeals_player ON ban_appeals("playerGuid");
+        CREATE INDEX IF NOT EXISTS idx_ban_appeals_status ON ban_appeals(status);
+        CREATE INDEX IF NOT EXISTS idx_ban_appeals_created ON ban_appeals("createdAt" DESC);
+      `);
+
+      // Player Reports table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS player_reports (
+          id TEXT PRIMARY KEY,
+          "reportIndex" SERIAL,
+          "reporterGuid" TEXT NOT NULL,
+          "reporterName" TEXT NOT NULL,
+          "reporterUserId" TEXT NOT NULL,
+          "offenderGuid" TEXT NOT NULL,
+          "offenderName" TEXT NOT NULL,
+          "serverName" TEXT,
+          reason TEXT NOT NULL,
+          description TEXT NOT NULL,
+          "videoUrl" TEXT NOT NULL,
+          status TEXT DEFAULT 'open',
+          "claimedBy" TEXT,
+          "claimedAt" BIGINT,
+          "resolvedBy" TEXT,
+          "resolvedAt" BIGINT,
+          resolution TEXT,
+          "actionTaken" TEXT,
+          "createdAt" BIGINT NOT NULL,
+          "updatedAt" BIGINT
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_player_reports_user ON player_reports("reporterUserId");
+        CREATE INDEX IF NOT EXISTS idx_player_reports_offender ON player_reports("offenderGuid");
+        CREATE INDEX IF NOT EXISTS idx_player_reports_status ON player_reports(status);
+        CREATE INDEX IF NOT EXISTS idx_player_reports_created ON player_reports("createdAt" DESC);
+      `);
+
+      // Notifications table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS notifications (
+          id TEXT PRIMARY KEY,
+          "userId" TEXT NOT NULL,
+          type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          link TEXT,
+          read BOOLEAN DEFAULT FALSE,
+          "createdAt" BIGINT NOT NULL
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications("userId");
+        CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications("userId", read) WHERE read = FALSE;
+        CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications("createdAt" DESC);
+      `);
+
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
       client.release();
@@ -1150,6 +1238,321 @@ export class PostgresDatabaseManager {
       sourceManager: row.sourceManager,
       createdAt: row.createdAt ? parseInt(row.createdAt) : null
     }));
+  }
+
+  // ============ BAN APPEALS ============
+
+  async createBanAppeal(appeal) {
+    const id = `appeal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+
+    await this.pool.query(`
+      INSERT INTO ban_appeals (id, "playerGuid", "playerName", "userId", "banReason", "banDate", "banExpiry", "isPermanent", "serverName", "isGlobal", "appealReason", "additionalInfo", status, "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    `, [
+      id,
+      appeal.playerGuid,
+      appeal.playerName,
+      appeal.userId,
+      appeal.banReason || null,
+      appeal.banDate || null,
+      appeal.banExpiry || null,
+      appeal.isPermanent || false,
+      appeal.serverName || null,
+      appeal.isGlobal || false,
+      appeal.appealReason,
+      appeal.additionalInfo || null,
+      'open',
+      now,
+      now
+    ]);
+
+    return id;
+  }
+
+  async getUserAppeals(userId) {
+    const result = await this.pool.query(`
+      SELECT * FROM ban_appeals
+      WHERE "userId" = $1
+      ORDER BY "createdAt" DESC
+    `, [userId]);
+
+    return result.rows.map(row => this.rowToAppeal(row));
+  }
+
+  async getAppealsByPlayer(playerGuid) {
+    const result = await this.pool.query(`
+      SELECT * FROM ban_appeals
+      WHERE UPPER("playerGuid") = UPPER($1)
+      ORDER BY "createdAt" DESC
+    `, [playerGuid]);
+
+    return result.rows.map(row => this.rowToAppeal(row));
+  }
+
+  async getAllAppeals(status = null) {
+    let query = 'SELECT * FROM ban_appeals';
+    const params = [];
+
+    if (status) {
+      query += ' WHERE status = $1';
+      params.push(status);
+    }
+
+    query += ' ORDER BY "createdAt" DESC';
+
+    const result = await this.pool.query(query, params);
+    return result.rows.map(row => this.rowToAppeal(row));
+  }
+
+  async getAppeal(id) {
+    const result = await this.pool.query('SELECT * FROM ban_appeals WHERE id = $1', [id]);
+    return result.rows.length > 0 ? this.rowToAppeal(result.rows[0]) : null;
+  }
+
+  async claimAppeal(id, adminName) {
+    const now = Date.now();
+    await this.pool.query(`
+      UPDATE ban_appeals SET status = 'claimed', "claimedBy" = $1, "claimedAt" = $2, "updatedAt" = $3
+      WHERE id = $4
+    `, [adminName, now, now, id]);
+  }
+
+  async resolveAppeal(id, adminName, accepted, resolution, cooldownHours = 24) {
+    const now = Date.now();
+    const cooldownUntil = accepted ? null : now + (cooldownHours * 60 * 60 * 1000);
+
+    await this.pool.query(`
+      UPDATE ban_appeals SET
+        status = $1,
+        "resolvedBy" = $2,
+        "resolvedAt" = $3,
+        resolution = $4,
+        "cooldownUntil" = $5,
+        "updatedAt" = $6
+      WHERE id = $7
+    `, [accepted ? 'accepted' : 'denied', adminName, now, resolution, cooldownUntil, now, id]);
+  }
+
+  async canUserAppeal(userId, playerGuid) {
+    // Check if there's a recent denied appeal with cooldown still active
+    const result = await this.pool.query(`
+      SELECT "cooldownUntil" FROM ban_appeals
+      WHERE "userId" = $1 AND UPPER("playerGuid") = UPPER($2) AND status = 'denied' AND "cooldownUntil" > $3
+      ORDER BY "createdAt" DESC
+      LIMIT 1
+    `, [userId, playerGuid, Date.now()]);
+
+    if (result.rows.length > 0) {
+      return { canAppeal: false, cooldownUntil: parseInt(result.rows[0].cooldownUntil) };
+    }
+
+    // Check if there's already an open or claimed appeal
+    const openResult = await this.pool.query(`
+      SELECT id FROM ban_appeals
+      WHERE "userId" = $1 AND UPPER("playerGuid") = UPPER($2) AND status IN ('open', 'claimed')
+      LIMIT 1
+    `, [userId, playerGuid]);
+
+    if (openResult.rows.length > 0) {
+      return { canAppeal: false, hasOpenAppeal: true };
+    }
+
+    return { canAppeal: true };
+  }
+
+  rowToAppeal(row) {
+    return {
+      id: row.id,
+      appealIndex: row.appealIndex,
+      playerGuid: row.playerGuid,
+      playerName: row.playerName,
+      userId: row.userId,
+      banReason: row.banReason,
+      banDate: row.banDate ? parseInt(row.banDate) : null,
+      banExpiry: row.banExpiry ? parseInt(row.banExpiry) : null,
+      isPermanent: row.isPermanent,
+      serverName: row.serverName,
+      isGlobal: row.isGlobal,
+      appealReason: row.appealReason,
+      additionalInfo: row.additionalInfo,
+      status: row.status,
+      claimedBy: row.claimedBy,
+      claimedAt: row.claimedAt ? parseInt(row.claimedAt) : null,
+      resolvedBy: row.resolvedBy,
+      resolvedAt: row.resolvedAt ? parseInt(row.resolvedAt) : null,
+      resolution: row.resolution,
+      cooldownUntil: row.cooldownUntil ? parseInt(row.cooldownUntil) : null,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
+    };
+  }
+
+  // ============ PLAYER REPORTS ============
+
+  async createReport(report) {
+    const id = `report_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+
+    await this.pool.query(`
+      INSERT INTO player_reports (id, "reporterGuid", "reporterName", "reporterUserId", "offenderGuid", "offenderName", "serverName", reason, description, "videoUrl", status, "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    `, [
+      id,
+      report.reporterGuid,
+      report.reporterName,
+      report.reporterUserId,
+      report.offenderGuid,
+      report.offenderName,
+      report.serverName || null,
+      report.reason,
+      report.description,
+      report.videoUrl,
+      'open',
+      now,
+      now
+    ]);
+
+    return id;
+  }
+
+  async getUserReports(userId) {
+    const result = await this.pool.query(`
+      SELECT * FROM player_reports
+      WHERE "reporterUserId" = $1
+      ORDER BY "createdAt" DESC
+    `, [userId]);
+
+    return result.rows.map(row => this.rowToReport(row));
+  }
+
+  async getAllReports(status = null) {
+    let query = 'SELECT * FROM player_reports';
+    const params = [];
+
+    if (status) {
+      query += ' WHERE status = $1';
+      params.push(status);
+    }
+
+    query += ' ORDER BY "createdAt" DESC';
+
+    const result = await this.pool.query(query, params);
+    return result.rows.map(row => this.rowToReport(row));
+  }
+
+  async getReport(id) {
+    const result = await this.pool.query('SELECT * FROM player_reports WHERE id = $1', [id]);
+    return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
+  }
+
+  async claimReport(id, adminName) {
+    const now = Date.now();
+    await this.pool.query(`
+      UPDATE player_reports SET status = 'claimed', "claimedBy" = $1, "claimedAt" = $2, "updatedAt" = $3
+      WHERE id = $4
+    `, [adminName, now, now, id]);
+  }
+
+  async resolveReport(id, adminName, actionTaken, resolution) {
+    const now = Date.now();
+    const status = actionTaken === 'no_action' ? 'no_action' : 'action_taken';
+
+    await this.pool.query(`
+      UPDATE player_reports SET
+        status = $1,
+        "resolvedBy" = $2,
+        "resolvedAt" = $3,
+        resolution = $4,
+        "actionTaken" = $5,
+        "updatedAt" = $6
+      WHERE id = $7
+    `, [status, adminName, now, resolution, actionTaken, now, id]);
+  }
+
+  rowToReport(row) {
+    return {
+      id: row.id,
+      reportIndex: row.reportIndex,
+      reporterGuid: row.reporterGuid,
+      reporterName: row.reporterName,
+      reporterUserId: row.reporterUserId,
+      offenderGuid: row.offenderGuid,
+      offenderName: row.offenderName,
+      serverName: row.serverName,
+      reason: row.reason,
+      description: row.description,
+      videoUrl: row.videoUrl,
+      status: row.status,
+      claimedBy: row.claimedBy,
+      claimedAt: row.claimedAt ? parseInt(row.claimedAt) : null,
+      resolvedBy: row.resolvedBy,
+      resolvedAt: row.resolvedAt ? parseInt(row.resolvedAt) : null,
+      resolution: row.resolution,
+      actionTaken: row.actionTaken,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
+    };
+  }
+
+  // ============ NOTIFICATIONS ============
+
+  async createNotification(notification) {
+    const id = `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+
+    await this.pool.query(`
+      INSERT INTO notifications (id, "userId", type, title, message, link, read, "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      id,
+      notification.userId,
+      notification.type,
+      notification.title,
+      notification.message,
+      notification.link || null,
+      false,
+      now
+    ]);
+
+    return id;
+  }
+
+  async getUserNotifications(userId, limit = 50) {
+    const result = await this.pool.query(`
+      SELECT * FROM notifications
+      WHERE "userId" = $1
+      ORDER BY "createdAt" DESC
+      LIMIT $2
+    `, [userId, limit]);
+
+    return result.rows.map(row => ({
+      id: row.id,
+      userId: row.userId,
+      type: row.type,
+      title: row.title,
+      message: row.message,
+      link: row.link,
+      read: row.read,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null
+    }));
+  }
+
+  async getUnreadNotificationCount(userId) {
+    const result = await this.pool.query(`
+      SELECT COUNT(*) as count FROM notifications
+      WHERE "userId" = $1 AND read = FALSE
+    `, [userId]);
+
+    return parseInt(result.rows[0].count);
+  }
+
+  async markNotificationRead(id) {
+    await this.pool.query('UPDATE notifications SET read = TRUE WHERE id = $1', [id]);
+  }
+
+  async markAllNotificationsRead(userId) {
+    await this.pool.query('UPDATE notifications SET read = TRUE WHERE "userId" = $1', [userId]);
   }
 
   async close() {

@@ -864,83 +864,229 @@ app.post('/api/steam/avatars', async (req, res) => {
   }
 });
 
-const DISCORD_REPORTS_WEBHOOK = process.env.DISCORD_REPORTS_WEBHOOK;
-const DISCORD_BAN_APPEALS_WEBHOOK = process.env.DISCORD_BAN_APPEALS_WEBHOOK;
+// NOTE: Discord webhook constants removed - now using database-backed appeals/reports system
 
-app.post('/api/reports', async (req, res) => {
+// ==========================================
+// BAN APPEALS ENDPOINTS (Database-backed)
+// ==========================================
+
+// Submit a new ban appeal (requires auth)
+app.post('/api/ban-appeals', requireAuth, async (req, res) => {
   try {
     const {
-      reporterName,
-      reporterGuid,
-      offenderName,
-      offenderGuid,
+      playerGuid,
+      playerName,
+      banReason,
+      banDate,
+      banExpiry,
+      isPermanent,
       serverName,
-      reason,
-      reasonLabel,
-      description,
-      videoUrl,
-      discordUsername,
-      timestamp
+      isGlobal,
+      appealReason,
+      additionalInfo
     } = req.body;
 
-    if (!reporterName || !offenderName || !reason || !description) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!playerGuid || !appealReason) {
+      return res.status(400).json({ error: 'Missing required fields: playerGuid, appealReason' });
     }
 
-    if (DISCORD_REPORTS_WEBHOOK) {
-      const reasonColors = {
-        cheating: 0xFF0000,
-        intentional_crashing: 0xFF8C00,
-        toxic_behavior: 0xFFD700,
-        inappropriate_name: 0x9400D3,
-        exploiting: 0x0000FF,
-        other: 0x808080
-      };
+    // Check if user can appeal (not in cooldown)
+    const canAppeal = await db.canUserAppeal(req.userId, playerGuid.toUpperCase());
+    if (!canAppeal.canAppeal) {
+      return res.status(403).json({
+        error: canAppeal.reason,
+        cooldownUntil: canAppeal.cooldownUntil
+      });
+    }
 
-      const embed = {
-        title: 'New Player Report',
-        color: reasonColors[reason] || 0xFF0000,
-        fields: [
-          { name: 'Reporter', value: reporterName, inline: true },
-          { name: 'Offender', value: offenderName, inline: true },
-          { name: 'Reason', value: reasonLabel || reason, inline: true }
-        ],
-        timestamp: timestamp || new Date().toISOString(),
-        footer: { text: 'CBR Report System' }
-      };
+    const appeal = await db.createBanAppeal({
+      playerGuid: playerGuid.toUpperCase(),
+      playerName: playerName || 'Unknown',
+      userId: req.userId,
+      banReason: banReason || 'Unknown',
+      banDate: banDate || null,
+      banExpiry: banExpiry || null,
+      isPermanent: isPermanent !== false,
+      serverName: serverName || null,
+      isGlobal: isGlobal !== false,
+      appealReason,
+      additionalInfo: additionalInfo || null
+    });
 
-      if (serverName) {
-        embed.fields.push({ name: 'Server', value: serverName, inline: true });
-      }
-      if (discordUsername) {
-        embed.fields.push({ name: 'Discord', value: discordUsername, inline: true });
-      }
+    console.log(`[BAN-APPEAL] New appeal #${appeal.appealIndex} from ${playerName} (${playerGuid})`);
+    res.json({ success: true, appeal });
 
-      embed.fields.push({ name: 'Description', value: description.slice(0, 1024) });
+  } catch (err) {
+    console.error('[BAN-APPEAL] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
-      if (videoUrl) {
-        embed.fields.push({ name: 'Video Evidence', value: videoUrl });
-      }
-      if (offenderGuid) {
-        embed.fields.push({ name: 'Offender GUID', value: `\`${offenderGuid}\`` });
-      }
-      if (reporterGuid) {
-        embed.fields.push({ name: 'Reporter GUID', value: `\`${reporterGuid}\`` });
-      }
+// Get user's own appeals
+app.get('/api/ban-appeals/my', requireAuth, async (req, res) => {
+  try {
+    const appeals = await db.getUserAppeals(req.userId);
+    res.json(appeals);
+  } catch (err) {
+    console.error('[BAN-APPEAL] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
+// Check if user can appeal
+app.get('/api/ban-appeals/can-appeal', requireAuth, async (req, res) => {
+  try {
+    const { playerGuid } = req.query;
+    if (!playerGuid) {
+      return res.status(400).json({ error: 'Missing playerGuid' });
+    }
+    const result = await db.canUserAppeal(req.userId, playerGuid.toUpperCase());
+    res.json(result);
+  } catch (err) {
+    console.error('[BAN-APPEAL] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get all appeals
+app.get('/api/admin/ban-appeals', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { status } = req.query;
+    const appeals = await db.getAllAppeals(status || null);
+    res.json(appeals);
+  } catch (err) {
+    console.error('[ADMIN] Get appeals error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Claim an appeal
+app.post('/api/admin/ban-appeals/:id/claim', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+
+    const appeal = await db.claimAppeal(id, adminName);
+    if (!appeal) {
+      return res.status(404).json({ error: 'Appeal not found or already claimed' });
+    }
+
+    console.log(`[ADMIN] Appeal #${appeal.appealIndex} claimed by ${adminName}`);
+    res.json({ success: true, appeal });
+  } catch (err) {
+    console.error('[ADMIN] Claim appeal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Resolve an appeal (accept/deny)
+app.post('/api/admin/ban-appeals/:id/resolve', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { accepted, resolution, cooldownHours } = req.body;
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+
+    if (typeof accepted !== 'boolean') {
+      return res.status(400).json({ error: 'Missing accepted (boolean)' });
+    }
+
+    const appeal = await db.resolveAppeal(id, adminName, accepted, resolution || '', cooldownHours || 24);
+    if (!appeal) {
+      return res.status(404).json({ error: 'Appeal not found' });
+    }
+
+    // If accepted, unban the player
+    if (accepted) {
       try {
-        await fetch(DISCORD_REPORTS_WEBHOOK, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ embeds: [embed] })
+        const sources = getApiSources();
+        for (const source of sources) {
+          try {
+            const serversResp = await fetchFromManager(source, '/servers');
+            const servers = Array.isArray(serversResp) ? serversResp : [];
+            if (servers.length > 0) {
+              const serverId = servers[0].id || servers[0].Id;
+              await fetchFromManager(source, `/servers/${serverId}/full-unban`, 'POST', { playerGuid: appeal.playerGuid })
+                .catch(() => fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', { playerGuid: appeal.playerGuid }));
+            }
+          } catch (err) {
+            console.error(`[ADMIN] Unban via appeal failed on ${source.id}:`, err.message);
+          }
+        }
+
+        // Store unban history
+        await db.addBanHistory({
+          playerGuid: appeal.playerGuid,
+          playerName: appeal.playerName,
+          action: 'unban',
+          reason: `Appeal #${appeal.appealIndex} accepted`,
+          isGlobal: true,
+          performedBy: adminName,
+          sourceManager: 'appeal'
         });
-      } catch (webhookErr) {
-        console.error('[REPORT] Discord webhook failed:', webhookErr.message);
+      } catch (unbanErr) {
+        console.error('[ADMIN] Unban from appeal error:', unbanErr.message);
       }
     }
 
-    console.log(`[REPORT] ${reporterName} reported ${offenderName} for ${reasonLabel}`);
-    res.json({ success: true, message: 'Report submitted successfully' });
+    // Create notification for the user
+    try {
+      await db.createNotification({
+        userId: appeal.userId,
+        type: accepted ? 'appeal_accepted' : 'appeal_denied',
+        title: accepted ? 'Ban Appeal Accepted' : 'Ban Appeal Denied',
+        message: accepted
+          ? 'Your ban appeal was accepted. You have been unbanned.'
+          : `Your ban appeal was denied. ${resolution || ''}`,
+        link: '/ban-appeal'
+      });
+    } catch (notifErr) {
+      console.error('[ADMIN] Notification error:', notifErr.message);
+    }
+
+    console.log(`[ADMIN] Appeal #${appeal.appealIndex} ${accepted ? 'ACCEPTED' : 'DENIED'} by ${adminName}`);
+    res.json({ success: true, appeal, unbanned: accepted });
+  } catch (err) {
+    console.error('[ADMIN] Resolve appeal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// PLAYER REPORTS ENDPOINTS (Database-backed)
+// ==========================================
+
+// Submit a new player report (requires auth)
+app.post('/api/reports', requireAuth, async (req, res) => {
+  try {
+    const {
+      reporterGuid,
+      reporterName,
+      offenderGuid,
+      offenderName,
+      serverName,
+      reason,
+      description,
+      videoUrl
+    } = req.body;
+
+    if (!offenderGuid || !offenderName || !reason || !description || !videoUrl) {
+      return res.status(400).json({ error: 'Missing required fields. Video URL is mandatory.' });
+    }
+
+    const report = await db.createReport({
+      reporterGuid: (reporterGuid || '').toUpperCase(),
+      reporterName: reporterName || 'Unknown',
+      reporterUserId: req.userId,
+      offenderGuid: offenderGuid.toUpperCase(),
+      offenderName,
+      serverName: serverName || null,
+      reason,
+      description,
+      videoUrl
+    });
+
+    console.log(`[REPORT] New report #${report.reportIndex} - ${reporterName} reported ${offenderName} for ${reason}`);
+    res.json({ success: true, report });
 
   } catch (err) {
     console.error('[REPORT] Error:', err.message);
@@ -948,71 +1094,138 @@ app.post('/api/reports', async (req, res) => {
   }
 });
 
-app.post('/api/ban-appeals', async (req, res) => {
+// Get user's own reports
+app.get('/api/reports/my', requireAuth, async (req, res) => {
   try {
-    const {
-      playerName,
-      playerGuid,
-      serverName,
-      banReason,
-      banReasonLabel,
-      banDate,
-      appealReason,
-      additionalInfo,
-      discordUsername,
-      userId,
-      timestamp
-    } = req.body;
-
-    if (!playerName || !playerGuid || !banReason || !appealReason) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    if (DISCORD_BAN_APPEALS_WEBHOOK) {
-      const embed = {
-        title: 'New Ban Appeal',
-        color: 0xFFA500,
-        fields: [
-          { name: 'Player Name', value: playerName, inline: true },
-          { name: 'Player GUID', value: `\`${playerGuid}\``, inline: true },
-          { name: 'Ban Reason', value: banReasonLabel || banReason, inline: true }
-        ],
-        timestamp: timestamp || new Date().toISOString(),
-        footer: { text: 'CBR Ban Appeals' }
-      };
-
-      if (serverName) {
-        embed.fields.push({ name: 'Server', value: serverName, inline: true });
-      }
-      if (banDate) {
-        embed.fields.push({ name: 'Ban Date', value: banDate, inline: true });
-      }
-      if (discordUsername) {
-        embed.fields.push({ name: 'Discord', value: discordUsername, inline: true });
-      }
-
-      embed.fields.push({ name: 'Appeal', value: appealReason.slice(0, 1024) });
-
-      if (additionalInfo) {
-        embed.fields.push({ name: 'Additional Info', value: additionalInfo.slice(0, 1024) });
-      }
-
-      try {
-        await fetch(DISCORD_BAN_APPEALS_WEBHOOK, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ embeds: [embed] })
-        });
-      } catch (webhookErr) {
-        console.error('[BAN-APPEAL] Discord webhook failed:', webhookErr.message);
-      }
-    }
-
-    console.log(`[BAN-APPEAL] ${playerName} (${playerGuid}) appealing ban for ${banReasonLabel}`);
-    res.json({ success: true, message: 'Ban appeal submitted successfully' });
-
+    const reports = await db.getUserReports(req.userId);
+    res.json(reports);
   } catch (err) {
-    console.error('[BAN-APPEAL] Error:', err.message);
+    console.error('[REPORT] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get all reports
+app.get('/api/admin/reports', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { status } = req.query;
+    const reports = await db.getAllReports(status || null);
+    res.json(reports);
+  } catch (err) {
+    console.error('[ADMIN] Get reports error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Claim a report
+app.post('/api/admin/reports/:id/claim', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+
+    const report = await db.claimReport(id, adminName);
+    if (!report) {
+      return res.status(404).json({ error: 'Report not found or already claimed' });
+    }
+
+    console.log(`[ADMIN] Report #${report.reportIndex} claimed by ${adminName}`);
+    res.json({ success: true, report });
+  } catch (err) {
+    console.error('[ADMIN] Claim report error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Resolve a report
+app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { actionTaken, resolution } = req.body;
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+
+    if (!actionTaken) {
+      return res.status(400).json({ error: 'Missing actionTaken' });
+    }
+
+    const report = await db.resolveReport(id, adminName, actionTaken, resolution || '');
+    if (!report) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    // Create notification for the reporter
+    try {
+      const actionText = actionTaken === 'banned' ? 'action was taken'
+        : actionTaken === 'warned' ? 'a warning was issued'
+        : 'no action was taken';
+
+      await db.createNotification({
+        userId: report.reporterUserId,
+        type: 'report_resolved',
+        title: 'Player Report Resolved',
+        message: `Your report against ${report.offenderName} has been reviewed and ${actionText}.`,
+        link: '/report'
+      });
+    } catch (notifErr) {
+      console.error('[ADMIN] Notification error:', notifErr.message);
+    }
+
+    console.log(`[ADMIN] Report #${report.reportIndex} resolved by ${adminName} - action: ${actionTaken}`);
+    res.json({ success: true, report });
+  } catch (err) {
+    console.error('[ADMIN] Resolve report error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// NOTIFICATIONS ENDPOINTS
+// ==========================================
+
+// Get user's notifications
+app.get('/api/notifications', requireAuth, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const notifications = await db.getUserNotifications(req.userId, limit);
+    res.json(notifications);
+  } catch (err) {
+    console.error('[NOTIFICATIONS] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get unread notification count
+app.get('/api/notifications/unread-count', requireAuth, async (req, res) => {
+  try {
+    const count = await db.getUnreadNotificationCount(req.userId);
+    res.json({ count });
+  } catch (err) {
+    console.error('[NOTIFICATIONS] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark a notification as read
+app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const notification = await db.markNotificationRead(id);
+    if (!notification) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[NOTIFICATIONS] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark all notifications as read
+app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
+  try {
+    await db.markAllNotificationsRead(req.userId);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[NOTIFICATIONS] Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
