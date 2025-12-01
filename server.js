@@ -899,47 +899,26 @@ async function syncSteamAvatars() {
   }
 }
 
-// Fast avatar sync loop - runs every 2 seconds until all avatars are synced
-// Then slows down to every 30 seconds to catch new players
+// Avatar sync loop - checks every 2 minutes for new players and stale avatars (12h)
 let avatarSyncInterval = null;
-let avatarSyncSlowMode = false;
 
 function startAvatarSyncLoop() {
   if (avatarSyncInterval) return; // Already running
 
-  console.log('[AVATAR SYNC] Starting fast sync loop...');
-  let consecutiveEmpty = 0;
-  avatarSyncSlowMode = false;
+  console.log('[AVATAR SYNC] Starting sync loop (every 2 min)...');
 
   const runSync = async () => {
     try {
       const result = await syncSteamAvatars();
-      if (result?.done) {
-        consecutiveEmpty++;
-        if (consecutiveEmpty >= 3 && !avatarSyncSlowMode) {
-          // All synced - switch to slow mode
-          console.log('[AVATAR SYNC] Initial sync complete, switching to slow mode (30s)');
-          avatarSyncSlowMode = true;
-          clearInterval(avatarSyncInterval);
-          avatarSyncInterval = setInterval(runSync, 30000); // Every 30 seconds
-        }
-      } else {
-        consecutiveEmpty = 0;
-        // If we were in slow mode and found work, speed up again
-        if (avatarSyncSlowMode) {
-          console.log('[AVATAR SYNC] Found new players, switching to fast mode');
-          avatarSyncSlowMode = false;
-          clearInterval(avatarSyncInterval);
-          avatarSyncInterval = setInterval(runSync, 2000);
-        }
+      if (!result?.done) {
+        console.log('[AVATAR SYNC] Synced batch');
       }
     } catch (err) {
-      console.error('[AVATAR SYNC] Loop error:', err.message);
+      console.error('[AVATAR SYNC] Error:', err.message);
     }
   };
 
-  avatarSyncInterval = setInterval(runSync, 2000); // Start fast (every 2 seconds)
-  runSync(); // Run immediately
+  avatarSyncInterval = setInterval(runSync, 120000); // Every 2 minutes
 }
 
 app.post('/api/steam/avatars', async (req, res) => {

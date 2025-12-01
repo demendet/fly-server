@@ -785,9 +785,9 @@ export class PostgresDatabaseManager {
     }
   }
 
-  // Get players needing avatar sync (no avatar or stale > 7 days)
+  // Get players needing avatar sync (no avatar or stale > 12 hours)
   async getPlayersNeedingAvatarSync(limit = 100) {
-    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    const twelveHoursAgo = Date.now() - (12 * 60 * 60 * 1000); // 12 hours
     const result = await this.pool.query(`
       SELECT guid FROM players
       WHERE "steamAvatarUrl" IS NULL
@@ -795,7 +795,7 @@ export class PostgresDatabaseManager {
          OR "steamAvatarUpdated" < $1
       ORDER BY "lastSeen" DESC NULLS LAST
       LIMIT $2
-    `, [sevenDaysAgo, limit]);
+    `, [twelveHoursAgo, limit]);
     return result.rows.map(r => r.guid);
   }
 
