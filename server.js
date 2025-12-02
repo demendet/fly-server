@@ -2594,6 +2594,106 @@ const LEADER_HEARTBEAT_INTERVAL = 5000;
 const LEADER_STALE_THRESHOLD = 15000;
 const LEADER_CHECK_INTERVAL = 3000;
 
+// Discord Webhook for Server List
+const DISCORD_SERVERLIST_WEBHOOK = 'https://discord.com/api/webhooks/1445267775609245726/AYqI__1rlHdIF1oc1fsgVqE65PwNa5kImpEHDVqZByH71zNLzp0gsb1E_jtMRd2vKu_h';
+const DISCORD_UPDATE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+let discordMessageId = null;
+let discordLoopInterval = null;
+
+async function updateDiscordServerList() {
+  try {
+    const serverData = stateManager.getCachedServerData();
+    if (!serverData || !serverData.servers) {
+      console.log('[DISCORD] No server data available');
+      return;
+    }
+
+    // Filter to only CBR servers and sort by name
+    const cbrServers = serverData.servers
+      .filter(s => s.name && s.name.includes('CBR'))
+      .sort((a, b) => {
+        // Extract server number from name (e.g., "20 CBR" -> 20)
+        const numA = parseInt(a.name?.match(/^(\d+)/)?.[1]) || 999;
+        const numB = parseInt(b.name?.match(/^(\d+)/)?.[1]) || 999;
+        return numA - numB;
+      });
+
+    if (cbrServers.length === 0) {
+      console.log('[DISCORD] No CBR servers found');
+      return;
+    }
+
+    // Build the message
+    let message = '## CBR Server Track List\n\n';
+
+    for (const server of cbrServers) {
+      const trackName = server.session?.track_name || 'No track loaded';
+      const playerCount = server.riders?.length || 0;
+      const maxPlayers = server.max_clients || 20;
+
+      message += `**${server.name}**\n`;
+      message += `> Track: \`${trackName}\`\n`;
+      message += `> Players: ${playerCount}/${maxPlayers}\n\n`;
+    }
+
+    message += `\n*Last updated: <t:${Math.floor(Date.now() / 1000)}:R>*`;
+
+    const payload = {
+      content: message,
+      allowed_mentions: { parse: [] } // Don't ping anyone
+    };
+
+    if (discordMessageId) {
+      // Edit existing message
+      const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}/messages/${discordMessageId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        console.log('[DISCORD] Failed to edit message, will create new one');
+        discordMessageId = null;
+      } else {
+        console.log('[DISCORD] Server list updated');
+      }
+    }
+
+    if (!discordMessageId) {
+      // Create new message
+      const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}?wait=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        discordMessageId = data.id;
+        console.log('[DISCORD] Server list message created:', discordMessageId);
+      } else {
+        console.error('[DISCORD] Failed to create message:', res.status);
+      }
+    }
+  } catch (err) {
+    console.error('[DISCORD] Error updating server list:', err.message);
+  }
+}
+
+function startDiscordServerListLoop() {
+  if (discordLoopInterval) return;
+
+  console.log('[DISCORD] Starting server list webhook loop');
+
+  // Initial update after 30 seconds (let server data populate first)
+  setTimeout(() => {
+    updateDiscordServerList();
+
+    // Then update every 5 minutes
+    discordLoopInterval = setInterval(updateDiscordServerList, DISCORD_UPDATE_INTERVAL);
+  }, 30000);
+}
+
 app.listen(PORT, async () => {
   console.log(`[SERVER] MXBikes Stats Server running on port ${PORT}`);
   console.log(`[SERVER] PostgreSQL connected`);
@@ -2705,6 +2805,9 @@ app.listen(PORT, async () => {
 
       // Start fast avatar sync loop (runs until all avatars are synced)
       startAvatarSyncLoop();
+
+      // Start Discord server list webhook loop
+      startDiscordServerListLoop();
     } else if (!acquired && isLeader) {
       isLeader = false;
       console.log(`[SERVER] ${machineId} lost leadership, becoming SECONDARY`);
