@@ -1490,6 +1490,102 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
   }
 });
 
+// Admin: Transfer a report to another admin
+app.post('/api/admin/reports/:id/transfer', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newAdminGuid, newAdminName } = req.body;
+    const currentAdminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+
+    if (!newAdminGuid || !newAdminName) {
+      return res.status(400).json({ error: 'Missing newAdminGuid or newAdminName' });
+    }
+
+    const report = await db.transferReport(id, newAdminGuid, newAdminName);
+    if (!report) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    // Create notification for new assignee
+    try {
+      // Get user ID from the new admin's guid by querying Firestore
+      const usersSnapshot = await firebaseAdmin.firestore()
+        .collection('users')
+        .where('linkedPlayerGuid', '==', newAdminGuid.toUpperCase())
+        .limit(1)
+        .get();
+
+      if (!usersSnapshot.empty) {
+        const newAdminUserId = usersSnapshot.docs[0].id;
+        await db.createNotification({
+          userId: newAdminUserId,
+          type: 'report_transferred',
+          title: 'Report Transferred to You',
+          message: `Report #${report.reportIndex} against ${report.offenderName} has been transferred to you by ${currentAdminName}.`,
+          link: '/admin/reports',
+          relatedId: report.id
+        });
+      }
+    } catch (notifErr) {
+      console.error('[ADMIN] Failed to create transfer notification:', notifErr.message);
+    }
+
+    console.log(`[ADMIN] Report #${report.reportIndex} transferred from ${currentAdminName} to ${newAdminName}`);
+    res.json({ success: true, report });
+  } catch (err) {
+    console.error('[ADMIN] Transfer report error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Transfer an appeal to another admin
+app.post('/api/admin/ban-appeals/:id/transfer', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newAdminGuid, newAdminName } = req.body;
+    const currentAdminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+
+    if (!newAdminGuid || !newAdminName) {
+      return res.status(400).json({ error: 'Missing newAdminGuid or newAdminName' });
+    }
+
+    const appeal = await db.transferAppeal(id, newAdminGuid, newAdminName);
+    if (!appeal) {
+      return res.status(404).json({ error: 'Appeal not found' });
+    }
+
+    // Create notification for new assignee
+    try {
+      // Get user ID from the new admin's guid by querying Firestore
+      const usersSnapshot = await firebaseAdmin.firestore()
+        .collection('users')
+        .where('linkedPlayerGuid', '==', newAdminGuid.toUpperCase())
+        .limit(1)
+        .get();
+
+      if (!usersSnapshot.empty) {
+        const newAdminUserId = usersSnapshot.docs[0].id;
+        await db.createNotification({
+          userId: newAdminUserId,
+          type: 'appeal_transferred',
+          title: 'Appeal Transferred to You',
+          message: `Appeal #${appeal.appealIndex} from ${appeal.playerName} has been transferred to you by ${currentAdminName}.`,
+          link: '/admin/reports',
+          relatedId: appeal.id
+        });
+      }
+    } catch (notifErr) {
+      console.error('[ADMIN] Failed to create transfer notification:', notifErr.message);
+    }
+
+    console.log(`[ADMIN] Appeal #${appeal.appealIndex} transferred from ${currentAdminName} to ${newAdminName}`);
+    res.json({ success: true, appeal });
+  } catch (err) {
+    console.error('[ADMIN] Transfer appeal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Admin: Delete a report (SuperAdmin only for now - testing)
 app.delete('/api/admin/reports/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -1840,7 +1936,7 @@ app.get('/api/player/:guid/ban-status', async (req, res) => {
       }
     }
 
-    // Cross-reference with ban_history to get correct bannedBy
+    // Cross-reference with ban_history to get correct bannedBy and evidence
     if (banInfo && db) {
       try {
         const banHistory = await db.getBanHistory(upperGuid);
@@ -1858,6 +1954,10 @@ app.get('/api/player/:guid/ban-status', async (req, res) => {
           }
           if (latestBan?.serverName && !banInfo.isGlobal) {
             banInfo.serverName = latestBan.serverName;
+          }
+          // Include evidence URL if available (from reports)
+          if (latestBan?.evidenceUrl) {
+            banInfo.evidenceUrl = latestBan.evidenceUrl;
           }
         }
       } catch (histErr) {
@@ -2130,7 +2230,8 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
           expiresAt,
           performedBy: adminName,
           sourceManager: results.map(r => r.source).join(','),
-          serverName: null // Global ban - all servers
+          serverName: null, // Global ban - all servers
+          evidenceUrl: banData.evidenceUrl || null // Video evidence from reports
         });
       } catch (histErr) {
         console.error('[ADMIN] Failed to store ban history:', histErr.message);
@@ -2258,7 +2359,8 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
         expiresAt,
         performedBy: adminName,
         sourceManager: results.map(r => r.source).join(','),
-        serverName: serverName // Store which server they were banned from
+        serverName: serverName, // Store which server they were banned from
+        evidenceUrl: banData.evidenceUrl || null // Video evidence from reports
       });
 
       // Reduce safety rating by 20% when banned

@@ -189,6 +189,11 @@ export class PostgresDatabaseManager {
         ALTER TABLE ban_history ADD COLUMN IF NOT EXISTS "serverName" TEXT;
       `).catch(() => {}); // Ignore if column exists or alter fails
 
+      // Migration: Add evidenceUrl column for storing video evidence from reports
+      await client.query(`
+        ALTER TABLE ban_history ADD COLUMN IF NOT EXISTS "evidenceUrl" TEXT;
+      `).catch(() => {}); // Ignore if column exists or alter fails
+
       // Ban Appeals table
       await client.query(`
         CREATE TABLE IF NOT EXISTS ban_appeals (
@@ -1342,8 +1347,8 @@ export class PostgresDatabaseManager {
     const now = Date.now();
 
     await this.pool.query(`
-      INSERT INTO ban_history (id, "playerGuid", "playerName", action, reason, duration, "durationType", "isGlobal", "isPermanent", "expiresAt", "performedBy", "sourceManager", "serverName", "createdAt")
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      INSERT INTO ban_history (id, "playerGuid", "playerName", action, reason, duration, "durationType", "isGlobal", "isPermanent", "expiresAt", "performedBy", "sourceManager", "serverName", "evidenceUrl", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     `, [
       id,
       entry.playerGuid,
@@ -1358,6 +1363,7 @@ export class PostgresDatabaseManager {
       entry.performedBy || 'System',
       entry.sourceManager || null,
       entry.serverName || null,
+      entry.evidenceUrl || null,
       now
     ]);
 
@@ -1385,6 +1391,7 @@ export class PostgresDatabaseManager {
       performedBy: row.performedBy,
       sourceManager: row.sourceManager,
       serverName: row.serverName,
+      evidenceUrl: row.evidenceUrl || null,
       createdAt: row.createdAt ? parseInt(row.createdAt) : null
     }));
   }
@@ -1536,6 +1543,16 @@ export class PostgresDatabaseManager {
       WHERE id = $5 AND status = 'open'
       RETURNING *
     `, [adminName, adminGuid, now, now, id]);
+    return result.rows.length > 0 ? this.rowToAppeal(result.rows[0]) : null;
+  }
+
+  async transferAppeal(id, newAdminGuid, newAdminName) {
+    const now = Date.now();
+    const result = await this.pool.query(`
+      UPDATE ban_appeals SET "claimedBy" = $1, "claimedByGuid" = $2, "updatedAt" = $3
+      WHERE id = $4 AND status = 'claimed'
+      RETURNING *
+    `, [newAdminName, newAdminGuid, now, id]);
     return result.rows.length > 0 ? this.rowToAppeal(result.rows[0]) : null;
   }
 
@@ -1705,6 +1722,16 @@ export class PostgresDatabaseManager {
       WHERE id = $5 AND status = 'open'
       RETURNING *
     `, [adminName, adminGuid, now, now, id]);
+    return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
+  }
+
+  async transferReport(id, newAdminGuid, newAdminName) {
+    const now = Date.now();
+    const result = await this.pool.query(`
+      UPDATE player_reports SET "claimedBy" = $1, "claimedByGuid" = $2, "updatedAt" = $3
+      WHERE id = $4 AND status = 'claimed'
+      RETURNING *
+    `, [newAdminName, newAdminGuid, now, id]);
     return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
   }
 
