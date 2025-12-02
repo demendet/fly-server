@@ -2692,19 +2692,58 @@ async function updateDiscordServerList() {
   }
 }
 
+async function testDiscordWebhook() {
+  console.log('[DISCORD] Testing webhook connection...');
+  try {
+    const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}?wait=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: '🏁 **CBR Server Bot Started**\nServer list will update automatically.',
+        allowed_mentions: { parse: [] }
+      })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      console.log('[DISCORD] Webhook test successful! Message ID:', data.id);
+      // Delete the test message after 5 seconds
+      setTimeout(async () => {
+        try {
+          await fetch(`${DISCORD_SERVERLIST_WEBHOOK}/messages/${data.id}`, { method: 'DELETE' });
+          console.log('[DISCORD] Test message deleted');
+        } catch (e) {
+          // Ignore delete errors
+        }
+      }, 5000);
+      return true;
+    } else {
+      const errorText = await res.text();
+      console.error('[DISCORD] Webhook test failed:', res.status, errorText);
+      return false;
+    }
+  } catch (err) {
+    console.error('[DISCORD] Webhook test error:', err.message);
+    return false;
+  }
+}
+
 function startDiscordServerListLoop() {
   if (discordLoopInterval) return;
 
   console.log('[DISCORD] Starting server list webhook loop (10s interval for testing)');
 
-  // Initial update after 5 seconds
+  // Test the webhook first
+  testDiscordWebhook();
+
+  // Wait 15 seconds to ensure server data is available (update loop runs every 5s)
   setTimeout(() => {
     console.log('[DISCORD] Running initial update...');
     updateDiscordServerList();
 
     // Then update every 10 seconds for testing
     discordLoopInterval = setInterval(updateDiscordServerList, DISCORD_UPDATE_INTERVAL);
-  }, 5000);
+  }, 15000);
 }
 
 app.listen(PORT, async () => {
@@ -2736,6 +2775,15 @@ app.listen(PORT, async () => {
     console.log(`[SERVER] ${machineId} starting PRIMARY update loop`);
 
     await stateManager.recoverStateFromDatabase();
+
+    // Run first update immediately
+    console.log(`[SERVER] Running initial data fetch...`);
+    try {
+      await stateManager.runUpdateCycle();
+      console.log(`[SERVER] Initial data fetch complete`);
+    } catch (err) {
+      console.error('[SERVER] Initial fetch error:', err.message);
+    }
 
     updateLoopInterval = setInterval(async () => {
       if (cycleRunning) {
