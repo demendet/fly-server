@@ -2624,33 +2624,46 @@ async function updateDiscordServerList() {
     console.log('[DISCORD] CBR servers found:', cbrServers.length);
 
     if (cbrServers.length === 0) {
-      console.log('[DISCORD] No CBR servers found, posting all servers instead');
-      // Fallback: show all servers if no CBR servers
-      const allServers = serverData.servers.slice(0, 10);
-      if (allServers.length === 0) return;
+      console.log('[DISCORD] No CBR servers found');
+      return;
     }
 
-    const serversToShow = cbrServers.length > 0 ? cbrServers : serverData.servers.slice(0, 10);
+    // Calculate total players
+    const totalPlayers = cbrServers.reduce((sum, s) => sum + (s.riders?.length || 0), 0);
 
-    // Build the message
-    let message = '## CBR Server Track List\n\n';
-
-    for (const server of serversToShow) {
-      const trackName = server.session?.track_name || 'No track loaded';
+    // Build compact server list - super short format
+    let serverList = '';
+    for (const server of cbrServers) {
+      const trackName = server.session?.track_name || '-';
       const playerCount = server.riders?.length || 0;
-      const maxPlayers = server.max_clients || 20;
 
-      message += `**${server.name}**\n`;
-      message += `> Track: \`${trackName}\`\n`;
-      message += `> Players: ${playerCount}/${maxPlayers}\n\n`;
+      // Extract just the server number
+      const serverNum = server.name.match(/^(\d+)/)?.[1] || '?';
+
+      // Green dot for active, dim for empty
+      const dot = playerCount > 0 ? '`*`' : '` `';
+
+      serverList += `${dot} **${serverNum}** ${trackName} (${playerCount})\n`;
     }
 
-    message += `\n*Last updated: <t:${Math.floor(Date.now() / 1000)}:R>*`;
+    // Build embed for nicer formatting
+    const embed = {
+      title: 'CBR Server List',
+      description: serverList.substring(0, 4000), // Ensure under 4096 limit
+      color: 0x9333EA, // Purple color
+      footer: {
+        text: `${cbrServers.length} servers | ${totalPlayers} online`
+      },
+      timestamp: new Date().toISOString()
+    };
 
     const payload = {
-      content: message,
+      content: null,
+      embeds: [embed],
       allowed_mentions: { parse: [] }
     };
+
+    console.log('[DISCORD] Payload size:', JSON.stringify(payload).length, 'chars');
 
     console.log('[DISCORD] Sending to webhook, message ID:', discordMessageId || 'NEW');
 
