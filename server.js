@@ -391,27 +391,80 @@ app.get('/', (req, res) => {
   res.send('MXBikes Stats Server v3 - Fly.io Edition');
 });
 
-app.get('/api/bulk', async (req, res) => {
+// =============================================================================
+// BULK ENDPOINT WITH BACKGROUND PRE-GENERATION
+// The response is always ready in memory - ZERO wait time for DB queries
+// =============================================================================
+let bulkResponseCache = { data: null, timestamp: 0, generating: false };
+const BULK_REFRESH_INTERVAL = 3000; // Regenerate every 3 seconds
+
+// Background function to pre-generate bulk response
+async function regenerateBulkCache() {
+  if (bulkResponseCache.generating) return;
+  bulkResponseCache.generating = true;
+
   try {
+    const startTime = Date.now();
+
     const [players, sessions, servers, leaderboardMMR, leaderboardSR, records, stats, bannedGuids] = await Promise.all([
-      db.getAllPlayers(),
+      db.getAllPlayers(),                    // ALL players - no compromise
       db.getRecentSessions(50),
       Promise.resolve(stateManager.getCachedServerData()),
       db.getTopPlayersByMMR(100),
       db.getTopPlayersBySR(100),
-      db.getAllTrackRecords(),
+      db.getAllTrackRecords(),               // ALL records - no compromise
       db.getTotalFinalizedSessionsCount().then(count => ({ totalRaces: count })),
-      getAllBannedGuids()
+      Promise.resolve(getAllBannedGuids())
     ]);
-    res.json({
-      players,
-      sessions,
-      servers,
-      leaderboards: { mmr: leaderboardMMR, sr: leaderboardSR },
-      records,
-      stats,
-      bannedGuids
-    });
+
+    const queryTime = Date.now() - startTime;
+
+    bulkResponseCache = {
+      data: {
+        players,
+        sessions,
+        servers,
+        leaderboards: { mmr: leaderboardMMR, sr: leaderboardSR },
+        records,
+        stats,
+        bannedGuids
+      },
+      timestamp: Date.now(),
+      generating: false
+    };
+
+    // Only log occasionally to avoid spam
+    if (queryTime > 1000) {
+      console.log(`[BULK-CACHE] Regenerated in ${queryTime}ms (${players.length} players, ${records.length} records)`);
+    }
+  } catch (err) {
+    console.error('[BULK-CACHE] Error regenerating:', err.message);
+    bulkResponseCache.generating = false;
+  }
+}
+
+// Start background bulk cache regeneration loop
+function startBulkCacheLoop() {
+  console.log('[BULK-CACHE] Starting background pre-generation (every 3s)...');
+
+  // Initial generation
+  regenerateBulkCache();
+
+  // Schedule recurring regeneration
+  setInterval(regenerateBulkCache, BULK_REFRESH_INTERVAL);
+}
+
+app.get('/api/bulk', async (req, res) => {
+  try {
+    // INSTANT response from pre-generated cache
+    if (bulkResponseCache.data) {
+      return res.json(bulkResponseCache.data);
+    }
+
+    // Fallback: Generate on-demand if cache not ready yet (only on first request after startup)
+    console.log('[BULK] Cache not ready, generating on-demand...');
+    await regenerateBulkCache();
+    res.json(bulkResponseCache.data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -430,6 +483,20 @@ app.get('/api/banned-guids', async (req, res) => {
 app.get('/api/players', async (req, res) => {
   try {
     const players = await db.getAllPlayers();
+    res.json(players);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Search players by name - for finding older/inactive players
+app.get('/api/players/search', async (req, res) => {
+  try {
+    const query = req.query.q || '';
+    if (query.length < 2) {
+      return res.json([]);
+    }
+    const players = await db.searchPlayers(query, 100);
     res.json(players);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2426,6 +2493,9 @@ app.listen(PORT, async () => {
 
   // Start background ban sync on ALL instances (needed for API responses)
   startBannedGuidsSyncLoop();
+
+  // Start background bulk cache pre-generation (INSTANT responses, no DB wait)
+  startBulkCacheLoop();
 
   let isLeader = false;
   let updateLoopInterval = null;

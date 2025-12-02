@@ -499,8 +499,31 @@ export class PostgresDatabaseManager {
     return player;
   }
 
+  // Get ALL players (for backwards compatibility) - use getRecentPlayers for bulk endpoint
   async getAllPlayers() {
     const result = await this.pool.query('SELECT * FROM players ORDER BY "lastSeen" DESC');
+    return result.rows.map(row => this.rowToPlayer(row));
+  }
+
+  // Get recent/active players only - much faster for bulk endpoint
+  async getRecentPlayers(limit = 1000) {
+    const result = await this.pool.query(
+      'SELECT * FROM players ORDER BY "lastSeen" DESC LIMIT $1',
+      [limit]
+    );
+    return result.rows.map(row => this.rowToPlayer(row));
+  }
+
+  // Search players by name (for Players page search)
+  async searchPlayers(query, limit = 100) {
+    const searchTerm = `%${query.toLowerCase()}%`;
+    const result = await this.pool.query(
+      `SELECT * FROM players
+       WHERE "displayNameLower" LIKE $1 OR guid ILIKE $1
+       ORDER BY "lastSeen" DESC
+       LIMIT $2`,
+      [searchTerm, limit]
+    );
     return result.rows.map(row => this.rowToPlayer(row));
   }
 
@@ -1074,11 +1097,25 @@ export class PostgresDatabaseManager {
     return result.rows.map(row => this.rowToTrackRecord(row));
   }
 
+  // Get ALL track records (for backwards compatibility)
   async getAllTrackRecords() {
     const result = await this.pool.query(`
       SELECT * FROM track_records
       ORDER BY "trackName", "lapTime" ASC
     `);
+    return result.rows.map(row => this.rowToTrackRecord(row));
+  }
+
+  // Get only TOP records per track (much smaller payload for bulk endpoint)
+  async getTopTrackRecords(perTrack = 3) {
+    const result = await this.pool.query(`
+      SELECT * FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY "trackName" ORDER BY "lapTime" ASC) as rn
+        FROM track_records
+      ) ranked
+      WHERE rn <= $1
+      ORDER BY "trackName", "lapTime" ASC
+    `, [perTrack]);
     return result.rows.map(row => this.rowToTrackRecord(row));
   }
 
