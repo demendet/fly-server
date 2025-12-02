@@ -620,6 +620,33 @@ app.get('/api/records', async (req, res) => {
   }
 });
 
+// MXBMRP3 Plugin - Thomas. CBR reserves the right to revoke this endpoint at any time without reasoning.
+app.get('/api/records/top', async (req, res) => {
+  try {
+    const { track, limit = 10 } = req.query;
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
+
+    let records;
+    if (track) {
+      records = await db.getTrackRecords(track, limitNum);
+    } else {
+      records = await db.getTopTrackRecords(limitNum);
+    }
+
+    const formattedRecords = records.map(r => ({
+      track: r.trackName,
+      laptime: Math.round(r.lapTime * 1000),
+      player: r.playerName,
+      bike: r.bikeName || 'Unknown',
+      timestamp: r.setAt ? new Date(r.setAt).toISOString() : null
+    }));
+
+    res.json({ records: formattedRecords });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/stats', async (req, res) => {
   try {
     const totalRaces = await db.getTotalFinalizedSessionsCount();
