@@ -326,6 +326,27 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_player_warnings_created ON player_warnings("createdAt" DESC);
       `);
 
+      // Announcements table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS announcements (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          type TEXT DEFAULT 'info',
+          active BOOLEAN DEFAULT TRUE,
+          "createdBy" TEXT NOT NULL,
+          "createdByName" TEXT,
+          "createdAt" BIGINT NOT NULL,
+          "updatedAt" BIGINT,
+          "expiresAt" BIGINT
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_announcements_active ON announcements(active) WHERE active = TRUE;
+        CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements("createdAt" DESC);
+      `);
+
       // Migration: Add Steam avatar columns if they don't exist (for existing databases)
       try {
         await client.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS "steamAvatarUrl" TEXT`);
@@ -1833,6 +1854,115 @@ export class PostgresDatabaseManager {
 
   async markAllNotificationsRead(userId) {
     await this.pool.query('UPDATE notifications SET read = TRUE WHERE "userId" = $1', [userId]);
+  }
+
+  // ============ ANNOUNCEMENTS ============
+
+  async createAnnouncement(announcement) {
+    const id = `ann_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+
+    const result = await this.pool.query(`
+      INSERT INTO announcements (id, title, message, type, active, "createdBy", "createdByName", "createdAt", "updatedAt", "expiresAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING *
+    `, [
+      id,
+      announcement.title,
+      announcement.message,
+      announcement.type || 'info',
+      true,
+      announcement.createdBy,
+      announcement.createdByName || null,
+      now,
+      now,
+      announcement.expiresAt || null
+    ]);
+
+    return this.rowToAnnouncement(result.rows[0]);
+  }
+
+  async getActiveAnnouncements() {
+    const now = Date.now();
+    const result = await this.pool.query(`
+      SELECT * FROM announcements
+      WHERE active = TRUE AND ("expiresAt" IS NULL OR "expiresAt" > $1)
+      ORDER BY "createdAt" DESC
+    `, [now]);
+
+    return result.rows.map(row => this.rowToAnnouncement(row));
+  }
+
+  async getAllAnnouncements() {
+    const result = await this.pool.query(`
+      SELECT * FROM announcements
+      ORDER BY "createdAt" DESC
+    `);
+
+    return result.rows.map(row => this.rowToAnnouncement(row));
+  }
+
+  async getAnnouncementById(id) {
+    const result = await this.pool.query('SELECT * FROM announcements WHERE id = $1', [id]);
+    return result.rows.length > 0 ? this.rowToAnnouncement(result.rows[0]) : null;
+  }
+
+  async updateAnnouncement(id, updates) {
+    const now = Date.now();
+    const result = await this.pool.query(`
+      UPDATE announcements
+      SET title = COALESCE($1, title),
+          message = COALESCE($2, message),
+          type = COALESCE($3, type),
+          active = COALESCE($4, active),
+          "expiresAt" = $5,
+          "updatedAt" = $6
+      WHERE id = $7
+      RETURNING *
+    `, [
+      updates.title || null,
+      updates.message || null,
+      updates.type || null,
+      updates.active !== undefined ? updates.active : null,
+      updates.expiresAt !== undefined ? updates.expiresAt : null,
+      now,
+      id
+    ]);
+
+    return result.rows.length > 0 ? this.rowToAnnouncement(result.rows[0]) : null;
+  }
+
+  async toggleAnnouncementActive(id) {
+    const now = Date.now();
+    const result = await this.pool.query(`
+      UPDATE announcements
+      SET active = NOT active, "updatedAt" = $1
+      WHERE id = $2
+      RETURNING *
+    `, [now, id]);
+
+    return result.rows.length > 0 ? this.rowToAnnouncement(result.rows[0]) : null;
+  }
+
+  async deleteAnnouncement(id) {
+    const result = await this.pool.query('DELETE FROM announcements WHERE id = $1 RETURNING id', [id]);
+    return result.rows.length > 0;
+  }
+
+  rowToAnnouncement(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      title: row.title,
+      message: row.message,
+      type: row.type,
+      active: row.active,
+      createdBy: row.createdBy,
+      createdByName: row.createdByName,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null,
+      expiresAt: row.expiresAt ? parseInt(row.expiresAt) : null
+    };
   }
 
   async close() {

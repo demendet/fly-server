@@ -1597,6 +1597,118 @@ app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
   }
 });
 
+// ============ ANNOUNCEMENTS ============
+
+// Get active announcements (public)
+app.get('/api/announcements', async (req, res) => {
+  try {
+    const announcements = await db.getActiveAnnouncements();
+    res.json(announcements);
+  } catch (err) {
+    console.error('[ANNOUNCEMENTS] Error fetching:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get all announcements (including inactive)
+app.get('/api/admin/announcements', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const announcements = await db.getAllAnnouncements();
+    res.json(announcements);
+  } catch (err) {
+    console.error('[ANNOUNCEMENTS] Error fetching all:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Create announcement
+app.post('/api/admin/announcements', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { title, message, type, expiresAt } = req.body;
+
+    if (!title || !message) {
+      return res.status(400).json({ error: 'Title and message are required' });
+    }
+
+    const announcement = await db.createAnnouncement({
+      title,
+      message,
+      type: type || 'info',
+      createdBy: req.userId,
+      createdByName: req.userProfile?.displayName || 'Admin',
+      expiresAt: expiresAt || null
+    });
+
+    console.log(`[ANNOUNCEMENTS] Created by ${req.userProfile?.displayName}: "${title}"`);
+    res.json({ success: true, announcement });
+  } catch (err) {
+    console.error('[ANNOUNCEMENTS] Error creating:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Update announcement
+app.put('/api/admin/announcements/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, message, type, active, expiresAt } = req.body;
+
+    const announcement = await db.updateAnnouncement(id, {
+      title,
+      message,
+      type,
+      active,
+      expiresAt
+    });
+
+    if (!announcement) {
+      return res.status(404).json({ error: 'Announcement not found' });
+    }
+
+    console.log(`[ANNOUNCEMENTS] Updated ${id} by ${req.userProfile?.displayName}`);
+    res.json({ success: true, announcement });
+  } catch (err) {
+    console.error('[ANNOUNCEMENTS] Error updating:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Toggle announcement active status
+app.post('/api/admin/announcements/:id/toggle', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const announcement = await db.toggleAnnouncementActive(id);
+
+    if (!announcement) {
+      return res.status(404).json({ error: 'Announcement not found' });
+    }
+
+    console.log(`[ANNOUNCEMENTS] Toggled ${id} to ${announcement.active ? 'active' : 'inactive'}`);
+    res.json({ success: true, announcement });
+  } catch (err) {
+    console.error('[ANNOUNCEMENTS] Error toggling:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Delete announcement
+app.delete('/api/admin/announcements/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await db.deleteAnnouncement(id);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Announcement not found' });
+    }
+
+    console.log(`[ANNOUNCEMENTS] Deleted ${id} by ${req.userProfile?.displayName}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[ANNOUNCEMENTS] Error deleting:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function getApiSources() {
   return [
     { id: 'manager1', url: env.MXBIKES_API_URL_1, key: env.MXBIKES_API_KEY_1 },
