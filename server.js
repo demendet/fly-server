@@ -22,8 +22,8 @@ try {
   console.error('[INIT] Firebase Admin SDK initialization failed:', err.message);
 }
 
-const ADMIN_ROLES = ['admin', 'superadmin'];
-const MODERATOR_ROLES = ['moderator', 'admin', 'superadmin'];
+const ADMIN_ROLES = ['admin', 'superadmin', 'root'];
+const MODERATOR_ROLES = ['moderator', 'admin', 'superadmin', 'root'];
 
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
