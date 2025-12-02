@@ -690,6 +690,7 @@ app.get('/api/records/top', async (req, res) => {
       laptime: Math.round(r.lapTime * 1000),
       player: r.playerName,
       bike: r.bikeName || 'Unknown',
+      category: r.bikeCategory || null,
       timestamp: r.setAt ? new Date(r.setAt).toISOString() : null
     }));
 
@@ -816,7 +817,7 @@ app.post('/api/players/connect', async (req, res) => {
 
 app.post('/api/check-pb', async (req, res) => {
   try {
-    const { playerGuid, playerName, trackName, lapTime, sessionType, raceNumber, bikeName, serverId } = req.body;
+    const { playerGuid, playerName, trackName, lapTime, sessionType, raceNumber, bikeName, bikeCategory, serverId } = req.body;
 
     let resolvedTrackName = trackName;
     if (!resolvedTrackName && serverId) {
@@ -847,7 +848,8 @@ app.post('/api/check-pb', async (req, res) => {
       lapTime,
       sessionType: sessionType || 'race',
       raceNumber: raceNumber || 0,
-      bikeName: bikeName || null
+      bikeName: bikeName || null,
+      bikeCategory: bikeCategory || null
     });
 
     console.log(`[PB] ${playerName}: isPB=${result.isPB}, time=${result.lapTime}`);

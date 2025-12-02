@@ -120,6 +120,11 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_track_records_player ON track_records("playerGuid");
       `);
 
+      // Migration: Add bikeCategory column for MXBMRP3 integration
+      await client.query(`
+        ALTER TABLE track_records ADD COLUMN IF NOT EXISTS "bikeCategory" TEXT;
+      `).catch(() => {});
+
       await client.query(`
         CREATE TABLE IF NOT EXISTS contacts (
           id TEXT PRIMARY KEY,
@@ -1039,7 +1044,7 @@ export class PostgresDatabaseManager {
   }
 
   async checkSinglePlayerPB(record) {
-    const { playerGuid, playerName, trackName, lapTime, sessionType, bikeName } = record;
+    const { playerGuid, playerName, trackName, lapTime, sessionType, bikeName, bikeCategory } = record;
     const id = `${playerGuid}_${trackName}`;
     const now = Date.now();
 
@@ -1057,16 +1062,17 @@ export class PostgresDatabaseManager {
         const improvement = existingPB ? existingPB - lapTime : 0;
 
         await client.query(`
-          INSERT INTO track_records (id, "playerGuid", "playerName", "trackName", "lapTime", "bikeName", "sessionType", "setAt")
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          INSERT INTO track_records (id, "playerGuid", "playerName", "trackName", "lapTime", "bikeName", "bikeCategory", "sessionType", "setAt")
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
           ON CONFLICT (id) DO UPDATE SET
             "lapTime" = EXCLUDED."lapTime",
             "playerName" = EXCLUDED."playerName",
             "bikeName" = EXCLUDED."bikeName",
+            "bikeCategory" = EXCLUDED."bikeCategory",
             "sessionType" = EXCLUDED."sessionType",
             "setAt" = EXCLUDED."setAt"
           WHERE EXCLUDED."lapTime" < track_records."lapTime"
-        `, [id, playerGuid, playerName, trackName, lapTime, bikeName || null, sessionType, now]);
+        `, [id, playerGuid, playerName, trackName, lapTime, bikeName || null, bikeCategory || null, sessionType, now]);
 
         console.log(`[PB-INSTANT] ${playerName} new PB on ${trackName}: ${lapTime}s${improvement > 0 ? ` (-${improvement.toFixed(3)}s)` : ' (first time)'}`);
 
@@ -1153,6 +1159,7 @@ export class PostgresDatabaseManager {
       trackName: row.trackName,
       lapTime: row.lapTime,
       bikeName: row.bikeName,
+      bikeCategory: row.bikeCategory,
       serverName: row.serverName,
       sessionId: row.sessionId,
       sessionType: row.sessionType,
