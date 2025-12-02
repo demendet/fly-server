@@ -320,6 +320,9 @@ setInterval(() => {
 
 // Origin/Referer check - only allow requests from our domains or with valid API key
 app.use('/api/', (req, res, next) => {
+  // MXBMRP3 public endpoint - skip origin check
+  if (req.path === '/records/top') return next();
+
   const origin = req.headers.origin || '';
   const referer = req.headers.referer || req.headers.referrer || '';
   const validOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
