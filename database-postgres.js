@@ -1710,7 +1710,13 @@ export class PostgresDatabaseManager {
 
   async resolveReport(id, adminName, adminGuid, actionTaken, resolution) {
     const now = Date.now();
-    const status = actionTaken === 'no_action' ? 'no_action' : 'action_taken';
+    // Handle pending_ban status - don't mark as resolved yet
+    const status = actionTaken === 'pending_ban' ? 'pending_ban'
+      : actionTaken === 'no_action' ? 'no_action'
+      : 'action_taken';
+
+    // For pending_ban, don't set resolvedAt yet (it's not resolved, just pending review)
+    const resolvedAt = actionTaken === 'pending_ban' ? null : now;
 
     const result = await this.pool.query(`
       UPDATE player_reports SET
@@ -1723,7 +1729,7 @@ export class PostgresDatabaseManager {
         "updatedAt" = $7
       WHERE id = $8
       RETURNING *
-    `, [status, adminName, adminGuid, now, resolution, actionTaken, now, id]);
+    `, [status, adminName, adminGuid, resolvedAt, resolution, actionTaken, now, id]);
     return result.rows.length > 0 ? this.rowToReport(result.rows[0]) : null;
   }
 

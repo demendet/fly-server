@@ -1458,7 +1458,13 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
       }
     }
 
-    // Create notification for the reporter
+    // For pending_ban, don't notify the reporter yet - wait for admin review
+    if (actionTaken === 'pending_ban') {
+      console.log(`[ADMIN] Report #${report.reportIndex} marked as pending ban by ${adminName} - awaiting admin review`);
+      return res.json({ success: true, report });
+    }
+
+    // Create notification for the reporter (only for final resolutions)
     try {
       const actionText = actionTaken === 'banned' ? 'action was taken'
         : actionTaken === 'warned' ? 'a warning was issued'
