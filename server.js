@@ -449,6 +449,24 @@ async function regenerateAllSessionsCache() {
 }
 
 // =============================================================================
+// ALL PLAYERS CACHE (for Players page - refreshes every 30 seconds)
+// =============================================================================
+let allPlayersCache = { data: null, timestamp: 0, generating: false };
+const ALL_PLAYERS_REFRESH_INTERVAL = 30000; // 30 seconds
+
+async function regenerateAllPlayersCache() {
+  if (allPlayersCache.generating) return;
+  allPlayersCache.generating = true;
+  try {
+    const players = await db.getAllPlayers();
+    allPlayersCache = { data: players, timestamp: Date.now(), generating: false };
+  } catch (err) {
+    console.error('[ALL-PLAYERS-CACHE] Error:', err.message);
+    allPlayersCache.generating = false;
+  }
+}
+
+// =============================================================================
 // BULK ENDPOINT WITH BACKGROUND PRE-GENERATION
 // The response is always ready in memory - ZERO wait time for DB queries
 // =============================================================================
@@ -464,7 +482,7 @@ async function regenerateBulkCache() {
     const startTime = Date.now();
 
     const [players, sessions, servers, leaderboardMMR, leaderboardSR, records, stats, bannedGuids] = await Promise.all([
-      db.getAllPlayers(),                    // ALL players - no compromise
+      db.getAllPlayersSlim(),                // ALL players slim (guid, name, mmr, sr, avatar) - fast
       db.getRecentSessions(50),              // 50 recent for fast Dashboard/Live
       Promise.resolve(stateManager.getCachedServerData()),
       db.getTopPlayersByMMR(100),
@@ -504,14 +522,17 @@ async function regenerateBulkCache() {
 function startBulkCacheLoop() {
   console.log('[BULK-CACHE] Starting background pre-generation (every 3s)...');
   console.log('[ALL-SESSIONS-CACHE] Starting background pre-generation (every 30s)...');
+  console.log('[ALL-PLAYERS-CACHE] Starting background pre-generation (every 30s)...');
 
   // Initial generation
   regenerateBulkCache();
   regenerateAllSessionsCache();
+  regenerateAllPlayersCache();
 
   // Schedule recurring regeneration
   setInterval(regenerateBulkCache, BULK_REFRESH_INTERVAL);
   setInterval(regenerateAllSessionsCache, ALL_SESSIONS_REFRESH_INTERVAL);
+  setInterval(regenerateAllPlayersCache, ALL_PLAYERS_REFRESH_INTERVAL);
 }
 
 // All sessions endpoint - cached separately, refreshes every 30s
@@ -523,6 +544,20 @@ app.get('/api/sessions/all', async (req, res) => {
     // Fallback if cache not ready
     await regenerateAllSessionsCache();
     res.json(allSessionsCache.data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// All players endpoint - full player data, cached separately, refreshes every 30s
+app.get('/api/players/all', async (req, res) => {
+  try {
+    if (allPlayersCache.data) {
+      return res.json(allPlayersCache.data);
+    }
+    // Fallback if cache not ready
+    await regenerateAllPlayersCache();
+    res.json(allPlayersCache.data || []);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

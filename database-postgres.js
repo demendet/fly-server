@@ -826,6 +826,27 @@ export class PostgresDatabaseManager {
     };
   }
 
+  // Slim player object for bulk endpoint - essential fields for search/display/avatars + Players page
+  rowToPlayerSlim(row) {
+    return {
+      guid: row.guid,
+      displayName: row.displayName,
+      mmr: row.mmr,
+      safetyRating: row.safetyRating,
+      totalRaces: row.totalRaces,
+      wins: row.wins,
+      lastSeen: row.lastSeen ? parseInt(row.lastSeen) : null,
+      currentServer: row.currentServer,
+      profileImageUrl: row.steamAvatarUrl || null
+    };
+  }
+
+  // Get ALL players with slim data (for bulk endpoint - fast, small payload)
+  async getAllPlayersSlim() {
+    const result = await this.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, "lastSeen", "currentServer", "steamAvatarUrl" FROM players ORDER BY "lastSeen" DESC');
+    return result.rows.map(row => this.rowToPlayerSlim(row));
+  }
+
   // Update Steam avatar for a player
   async updatePlayerSteamAvatar(guid, avatarUrl) {
     await this.pool.query(
