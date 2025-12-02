@@ -644,7 +644,10 @@ app.get('/api/records/top', async (req, res) => {
       timestamp: r.setAt ? new Date(r.setAt).toISOString() : null
     }));
 
-    res.json({ records: formattedRecords });
+    res.json({
+      notice: "MXBMRP3 Plugin - Thomas. CBR reserves the right to revoke this endpoint at any time without reasoning.",
+      records: formattedRecords
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
