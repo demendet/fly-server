@@ -662,7 +662,7 @@ app.get('/api/records', async (req, res) => {
 // MXBMRP3 Plugin - Thomas. CBR reserves the right to revoke this endpoint at any time without reasoning.
 app.get('/api/records/top', async (req, res) => {
   try {
-    const { track, limit = 10 } = req.query;
+    const { track, limit = 10, category } = req.query;
     const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
     const ip = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown';
 
@@ -680,9 +680,9 @@ app.get('/api/records/top', async (req, res) => {
 
     let records;
     if (track) {
-      records = await db.getTrackRecords(track, limitNum);
+      records = await db.getTrackRecords(track, limitNum, category);
     } else {
-      records = await db.getTopTrackRecords(limitNum);
+      records = await db.getTopTrackRecords(limitNum, category);
     }
 
     const formattedRecords = records.map(r => ({

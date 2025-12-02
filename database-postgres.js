@@ -1110,13 +1110,19 @@ export class PostgresDatabaseManager {
     }));
   }
 
-  async getTrackRecords(trackName, limit = 100) {
-    const result = await this.pool.query(`
-      SELECT * FROM track_records
-      WHERE "trackName" = $1
-      ORDER BY "lapTime" ASC
-      LIMIT $2
-    `, [trackName, limit]);
+  async getTrackRecords(trackName, limit = 100, category = null) {
+    let query = `SELECT * FROM track_records WHERE "trackName" = $1`;
+    const params = [trackName];
+
+    if (category) {
+      query += ` AND "bikeCategory" = $2`;
+      params.push(category);
+    }
+
+    query += ` ORDER BY "lapTime" ASC LIMIT $${params.length + 1}`;
+    params.push(limit);
+
+    const result = await this.pool.query(query, params);
     return result.rows.map(row => this.rowToTrackRecord(row));
   }
 
@@ -1139,15 +1145,24 @@ export class PostgresDatabaseManager {
   }
 
   // Get only TOP records per track (much smaller payload for bulk endpoint)
-  async getTopTrackRecords(perTrack = 3) {
+  async getTopTrackRecords(perTrack = 3, category = null) {
+    let innerWhere = '';
+    const params = [perTrack];
+
+    if (category) {
+      innerWhere = `WHERE "bikeCategory" = $2`;
+      params.push(category);
+    }
+
     const result = await this.pool.query(`
       SELECT * FROM (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY "trackName" ORDER BY "lapTime" ASC) as rn
         FROM track_records
+        ${innerWhere}
       ) ranked
       WHERE rn <= $1
       ORDER BY "trackName", "lapTime" ASC
-    `, [perTrack]);
+    `, params);
     return result.rows.map(row => this.rowToTrackRecord(row));
   }
 
