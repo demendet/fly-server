@@ -2640,8 +2640,8 @@ async function updateDiscordServerList() {
       // Extract just the server number
       const serverNum = server.name.match(/^(\d+)/)?.[1] || '?';
 
-      // Green dot for active, dim for empty
-      const dot = playerCount > 0 ? '`*`' : '` `';
+      // Green circle for players, yellow for empty
+      const dot = playerCount > 0 ? ':green_circle:' : ':yellow_circle:';
 
       serverList += `${dot} **${serverNum}** ${trackName} (${playerCount})\n`;
     }
