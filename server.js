@@ -25,6 +25,15 @@ try {
 const ADMIN_ROLES = ['admin', 'superadmin', 'root'];
 const MODERATOR_ROLES = ['moderator', 'admin', 'superadmin', 'root'];
 
+const mxbmrp3Stats = {
+  totalRequests: 0,
+  requestsToday: 0,
+  lastReset: Date.now(),
+  recentRequests: [],
+  byTrack: {},
+  byIP: {}
+};
+
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -101,6 +110,33 @@ async function requireAdmin(req, res, next) {
     next();
   } catch (err) {
     console.error('[AUTH] Admin check failed:', err.message);
+    return res.status(500).json({ error: 'Failed to verify permissions' });
+  }
+}
+
+async function requireRoot(req, res, next) {
+  if (!req.userId) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  try {
+    const userDoc = await firebaseAdmin.firestore().collection('users').doc(req.userId).get();
+    if (!userDoc.exists) {
+      return res.status(403).json({ error: 'User profile not found' });
+    }
+
+    const userData = userDoc.data();
+    const userRole = userData.role || 'user';
+
+    if (userRole !== 'root') {
+      return res.status(403).json({ error: 'Root access required' });
+    }
+
+    req.userRole = userRole;
+    req.userProfile = userData;
+    next();
+  } catch (err) {
+    console.error('[AUTH] Root check failed:', err.message);
     return res.status(500).json({ error: 'Failed to verify permissions' });
   }
 }
@@ -628,6 +664,19 @@ app.get('/api/records/top', async (req, res) => {
   try {
     const { track, limit = 10 } = req.query;
     const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
+    const ip = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown';
+
+    const now = Date.now();
+    if (now - mxbmrp3Stats.lastReset > 86400000) {
+      mxbmrp3Stats.requestsToday = 0;
+      mxbmrp3Stats.lastReset = now;
+    }
+    mxbmrp3Stats.totalRequests++;
+    mxbmrp3Stats.requestsToday++;
+    mxbmrp3Stats.byTrack[track || 'all'] = (mxbmrp3Stats.byTrack[track || 'all'] || 0) + 1;
+    mxbmrp3Stats.byIP[ip] = (mxbmrp3Stats.byIP[ip] || 0) + 1;
+    mxbmrp3Stats.recentRequests.unshift({ time: now, track: track || 'all', ip });
+    if (mxbmrp3Stats.recentRequests.length > 100) mxbmrp3Stats.recentRequests.pop();
 
     let records;
     if (track) {
@@ -657,6 +706,21 @@ app.get('/api/stats', async (req, res) => {
   try {
     const totalRaces = await db.getTotalFinalizedSessionsCount();
     res.json({ totalRaces });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/mxbmrp3-stats', requireAuth, requireRoot, async (req, res) => {
+  try {
+    res.json({
+      totalRequests: mxbmrp3Stats.totalRequests,
+      requestsToday: mxbmrp3Stats.requestsToday,
+      lastReset: mxbmrp3Stats.lastReset,
+      recentRequests: mxbmrp3Stats.recentRequests.slice(0, 50),
+      byTrack: mxbmrp3Stats.byTrack,
+      byIP: mxbmrp3Stats.byIP
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
