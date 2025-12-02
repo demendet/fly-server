@@ -645,7 +645,7 @@ app.get('/api/records/top', async (req, res) => {
     }));
 
     res.json({
-      notice: "MXBMRP3 Plugin - Thomas. CBR reserves the right to revoke this endpoint at any time without reasoning.",
+      notice: "MXBMRP3 Plugin - Thomas. Eskimo / CBR reserves the right to revoke this endpoint at any time without reasoning.",
       records: formattedRecords
     });
   } catch (err) {
