@@ -998,6 +998,28 @@ export class PostgresDatabaseManager {
     return result.rows.map(row => this.rowToSession(row));
   }
 
+  // Get ALL finalized sessions (for bulk endpoint - like getAllPlayers)
+  async getAllFinalizedSessions() {
+    const result = await this.pool.query(`
+      SELECT * FROM sessions
+      WHERE ("raceFinalized" = TRUE AND "totalEntries" > 0) OR "isActive" = TRUE
+      ORDER BY "startTime" DESC
+    `);
+    return result.rows.map(row => this.rowToSession(row));
+  }
+
+  // Search sessions by player participation (uses player_sessions table)
+  async searchSessionsByPlayer(playerGuid, limit = 100) {
+    const result = await this.pool.query(`
+      SELECT s.* FROM sessions s
+      INNER JOIN player_sessions ps ON s.id = ps."sessionId"
+      WHERE ps."playerGuid" = $1 AND s."raceFinalized" = TRUE
+      ORDER BY s."startTime" DESC
+      LIMIT $2
+    `, [playerGuid.toUpperCase(), limit]);
+    return result.rows.map(row => this.rowToSession(row));
+  }
+
   async getSession(sessionId) {
     const result = await this.pool.query('SELECT * FROM sessions WHERE id = $1', [sessionId]);
     return result.rows.length > 0 ? this.rowToSession(result.rows[0]) : null;

@@ -447,7 +447,7 @@ async function regenerateBulkCache() {
 
     const [players, sessions, servers, leaderboardMMR, leaderboardSR, records, stats, bannedGuids] = await Promise.all([
       db.getAllPlayers(),                    // ALL players - no compromise
-      db.getRecentSessions(50),
+      db.getAllFinalizedSessions(),          // ALL sessions - no compromise
       Promise.resolve(stateManager.getCachedServerData()),
       db.getTopPlayersByMMR(100),
       db.getTopPlayersBySR(100),
@@ -560,6 +560,18 @@ app.get('/api/session/:sessionId', async (req, res) => {
       return res.status(404).json({ error: 'Session not found' });
     }
     res.json(session);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Search sessions by player GUID - find all sessions a player participated in
+app.get('/api/sessions/player/:playerGuid', async (req, res) => {
+  try {
+    const { playerGuid } = req.params;
+    const limit = parseInt(req.query.limit) || 100;
+    const sessions = await db.searchSessionsByPlayer(playerGuid, limit);
+    res.json(sessions);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
