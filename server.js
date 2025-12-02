@@ -2596,13 +2596,17 @@ const LEADER_CHECK_INTERVAL = 3000;
 
 // Discord Webhook for Server List
 const DISCORD_SERVERLIST_WEBHOOK = 'https://discord.com/api/webhooks/1445267775609245726/AYqI__1rlHdIF1oc1fsgVqE65PwNa5kImpEHDVqZByH71zNLzp0gsb1E_jtMRd2vKu_h';
-const DISCORD_UPDATE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const DISCORD_UPDATE_INTERVAL = 10 * 1000; // 10 seconds for testing (change to 5 * 60 * 1000 for production)
 let discordMessageId = null;
 let discordLoopInterval = null;
 
 async function updateDiscordServerList() {
+  console.log('[DISCORD] Attempting to update server list...');
+
   try {
     const serverData = stateManager.getCachedServerData();
+    console.log('[DISCORD] Server data:', serverData ? `${serverData.servers?.length || 0} servers` : 'null');
+
     if (!serverData || !serverData.servers) {
       console.log('[DISCORD] No server data available');
       return;
@@ -2612,21 +2616,26 @@ async function updateDiscordServerList() {
     const cbrServers = serverData.servers
       .filter(s => s.name && s.name.includes('CBR'))
       .sort((a, b) => {
-        // Extract server number from name (e.g., "20 CBR" -> 20)
         const numA = parseInt(a.name?.match(/^(\d+)/)?.[1]) || 999;
         const numB = parseInt(b.name?.match(/^(\d+)/)?.[1]) || 999;
         return numA - numB;
       });
 
+    console.log('[DISCORD] CBR servers found:', cbrServers.length);
+
     if (cbrServers.length === 0) {
-      console.log('[DISCORD] No CBR servers found');
-      return;
+      console.log('[DISCORD] No CBR servers found, posting all servers instead');
+      // Fallback: show all servers if no CBR servers
+      const allServers = serverData.servers.slice(0, 10);
+      if (allServers.length === 0) return;
     }
+
+    const serversToShow = cbrServers.length > 0 ? cbrServers : serverData.servers.slice(0, 10);
 
     // Build the message
     let message = '## CBR Server Track List\n\n';
 
-    for (const server of cbrServers) {
+    for (const server of serversToShow) {
       const trackName = server.session?.track_name || 'No track loaded';
       const playerCount = server.riders?.length || 0;
       const maxPlayers = server.max_clients || 20;
@@ -2640,11 +2649,12 @@ async function updateDiscordServerList() {
 
     const payload = {
       content: message,
-      allowed_mentions: { parse: [] } // Don't ping anyone
+      allowed_mentions: { parse: [] }
     };
 
+    console.log('[DISCORD] Sending to webhook, message ID:', discordMessageId || 'NEW');
+
     if (discordMessageId) {
-      // Edit existing message
       const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}/messages/${discordMessageId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -2652,46 +2662,49 @@ async function updateDiscordServerList() {
       });
 
       if (!res.ok) {
-        console.log('[DISCORD] Failed to edit message, will create new one');
+        const errorText = await res.text();
+        console.log('[DISCORD] Failed to edit message:', res.status, errorText);
         discordMessageId = null;
       } else {
-        console.log('[DISCORD] Server list updated');
+        console.log('[DISCORD] Server list updated successfully');
+        return;
       }
     }
 
-    if (!discordMessageId) {
-      // Create new message
-      const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}?wait=true`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+    // Create new message
+    console.log('[DISCORD] Creating new message...');
+    const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}?wait=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-      if (res.ok) {
-        const data = await res.json();
-        discordMessageId = data.id;
-        console.log('[DISCORD] Server list message created:', discordMessageId);
-      } else {
-        console.error('[DISCORD] Failed to create message:', res.status);
-      }
+    if (res.ok) {
+      const data = await res.json();
+      discordMessageId = data.id;
+      console.log('[DISCORD] Server list message created with ID:', discordMessageId);
+    } else {
+      const errorText = await res.text();
+      console.error('[DISCORD] Failed to create message:', res.status, errorText);
     }
   } catch (err) {
-    console.error('[DISCORD] Error updating server list:', err.message);
+    console.error('[DISCORD] Error updating server list:', err.message, err.stack);
   }
 }
 
 function startDiscordServerListLoop() {
   if (discordLoopInterval) return;
 
-  console.log('[DISCORD] Starting server list webhook loop');
+  console.log('[DISCORD] Starting server list webhook loop (10s interval for testing)');
 
-  // Initial update after 30 seconds (let server data populate first)
+  // Initial update after 5 seconds
   setTimeout(() => {
+    console.log('[DISCORD] Running initial update...');
     updateDiscordServerList();
 
-    // Then update every 5 minutes
+    // Then update every 10 seconds for testing
     discordLoopInterval = setInterval(updateDiscordServerList, DISCORD_UPDATE_INTERVAL);
-  }, 30000);
+  }, 5000);
 }
 
 app.listen(PORT, async () => {
