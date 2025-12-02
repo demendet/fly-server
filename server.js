@@ -431,6 +431,24 @@ app.get('/', (req, res) => {
 });
 
 // =============================================================================
+// ALL SESSIONS CACHE (for Recent Sessions page - refreshes every 30 seconds)
+// =============================================================================
+let allSessionsCache = { data: null, timestamp: 0, generating: false };
+const ALL_SESSIONS_REFRESH_INTERVAL = 30000; // 30 seconds - historical data
+
+async function regenerateAllSessionsCache() {
+  if (allSessionsCache.generating) return;
+  allSessionsCache.generating = true;
+  try {
+    const sessions = await db.getAllFinalizedSessions();
+    allSessionsCache = { data: sessions, timestamp: Date.now(), generating: false };
+  } catch (err) {
+    console.error('[ALL-SESSIONS-CACHE] Error:', err.message);
+    allSessionsCache.generating = false;
+  }
+}
+
+// =============================================================================
 // BULK ENDPOINT WITH BACKGROUND PRE-GENERATION
 // The response is always ready in memory - ZERO wait time for DB queries
 // =============================================================================
@@ -447,7 +465,7 @@ async function regenerateBulkCache() {
 
     const [players, sessions, servers, leaderboardMMR, leaderboardSR, records, stats, bannedGuids] = await Promise.all([
       db.getAllPlayers(),                    // ALL players - no compromise
-      db.getAllFinalizedSessions(),          // ALL sessions - no compromise
+      db.getRecentSessions(50),              // 50 recent for fast Dashboard/Live
       Promise.resolve(stateManager.getCachedServerData()),
       db.getTopPlayersByMMR(100),
       db.getTopPlayersBySR(100),
@@ -485,13 +503,30 @@ async function regenerateBulkCache() {
 // Start background bulk cache regeneration loop
 function startBulkCacheLoop() {
   console.log('[BULK-CACHE] Starting background pre-generation (every 3s)...');
+  console.log('[ALL-SESSIONS-CACHE] Starting background pre-generation (every 30s)...');
 
   // Initial generation
   regenerateBulkCache();
+  regenerateAllSessionsCache();
 
   // Schedule recurring regeneration
   setInterval(regenerateBulkCache, BULK_REFRESH_INTERVAL);
+  setInterval(regenerateAllSessionsCache, ALL_SESSIONS_REFRESH_INTERVAL);
 }
+
+// All sessions endpoint - cached separately, refreshes every 30s
+app.get('/api/sessions/all', async (req, res) => {
+  try {
+    if (allSessionsCache.data) {
+      return res.json(allSessionsCache.data);
+    }
+    // Fallback if cache not ready
+    await regenerateAllSessionsCache();
+    res.json(allSessionsCache.data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get('/api/bulk', async (req, res) => {
   try {
