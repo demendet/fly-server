@@ -2600,169 +2600,19 @@ const LEADER_HEARTBEAT_INTERVAL = 5000;
 const LEADER_STALE_THRESHOLD = 15000;
 const LEADER_CHECK_INTERVAL = 3000;
 
-// Discord Webhook for Server List
+// Discord Webhook for Server List - DISABLED
+// To re-enable: uncomment startDiscordServerListLoop() call in the leader election section
+/*
 const DISCORD_SERVERLIST_WEBHOOK = 'https://discord.com/api/webhooks/1445267775609245726/AYqI__1rlHdIF1oc1fsgVqE65PwNa5kImpEHDVqZByH71zNLzp0gsb1E_jtMRd2vKu_h';
-const DISCORD_UPDATE_INTERVAL = 10 * 1000; // 10 seconds for testing (change to 5 * 60 * 1000 for production)
+const DISCORD_UPDATE_INTERVAL = 10 * 1000;
 let discordMessageId = null;
 let discordLoopInterval = null;
 
-async function updateDiscordServerList() {
-  console.log('[DISCORD] Attempting to update server list...');
-
-  try {
-    const serverData = stateManager.getCachedServerData();
-    console.log('[DISCORD] Server data:', serverData ? `${serverData.servers?.length || 0} servers` : 'null');
-
-    if (!serverData || !serverData.servers) {
-      console.log('[DISCORD] No server data available');
-      return;
-    }
-
-    // Filter to only CBR servers and sort by name
-    const cbrServers = serverData.servers
-      .filter(s => s.name && s.name.includes('CBR'))
-      .sort((a, b) => {
-        const numA = parseInt(a.name?.match(/^(\d+)/)?.[1]) || 999;
-        const numB = parseInt(b.name?.match(/^(\d+)/)?.[1]) || 999;
-        return numA - numB;
-      });
-
-    console.log('[DISCORD] CBR servers found:', cbrServers.length);
-
-    if (cbrServers.length === 0) {
-      console.log('[DISCORD] No CBR servers found');
-      return;
-    }
-
-    // Calculate total players
-    const totalPlayers = cbrServers.reduce((sum, s) => sum + (s.riders?.length || 0), 0);
-
-    // Build compact server list - super short format
-    let serverList = '';
-    for (const server of cbrServers) {
-      const trackName = server.session?.track_name || '-';
-      const playerCount = server.riders?.length || 0;
-
-      // Extract just the server number
-      const serverNum = server.name.match(/^(\d+)/)?.[1] || '?';
-
-      // Green circle for players, yellow for empty
-      const dot = playerCount > 0 ? ':green_circle:' : ':yellow_circle:';
-
-      serverList += `${dot} **${serverNum}** ${trackName} (${playerCount})\n`;
-    }
-
-    // Build embed for nicer formatting
-    const embed = {
-      title: 'CBR Server List',
-      description: serverList.substring(0, 4000), // Ensure under 4096 limit
-      color: 0x9333EA, // Purple color
-      footer: {
-        text: `${cbrServers.length} servers | ${totalPlayers} online`
-      },
-      timestamp: new Date().toISOString()
-    };
-
-    const payload = {
-      content: null,
-      embeds: [embed],
-      allowed_mentions: { parse: [] }
-    };
-
-    console.log('[DISCORD] Payload size:', JSON.stringify(payload).length, 'chars');
-
-    console.log('[DISCORD] Sending to webhook, message ID:', discordMessageId || 'NEW');
-
-    if (discordMessageId) {
-      const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}/messages/${discordMessageId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.log('[DISCORD] Failed to edit message:', res.status, errorText);
-        discordMessageId = null;
-      } else {
-        console.log('[DISCORD] Server list updated successfully');
-        return;
-      }
-    }
-
-    // Create new message
-    console.log('[DISCORD] Creating new message...');
-    const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}?wait=true`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      discordMessageId = data.id;
-      console.log('[DISCORD] Server list message created with ID:', discordMessageId);
-    } else {
-      const errorText = await res.text();
-      console.error('[DISCORD] Failed to create message:', res.status, errorText);
-    }
-  } catch (err) {
-    console.error('[DISCORD] Error updating server list:', err.message, err.stack);
-  }
-}
-
-async function testDiscordWebhook() {
-  console.log('[DISCORD] Testing webhook connection...');
-  try {
-    const res = await fetch(`${DISCORD_SERVERLIST_WEBHOOK}?wait=true`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: '🏁 **CBR Server Bot Started**\nServer list will update automatically.',
-        allowed_mentions: { parse: [] }
-      })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      console.log('[DISCORD] Webhook test successful! Message ID:', data.id);
-      // Delete the test message after 5 seconds
-      setTimeout(async () => {
-        try {
-          await fetch(`${DISCORD_SERVERLIST_WEBHOOK}/messages/${data.id}`, { method: 'DELETE' });
-          console.log('[DISCORD] Test message deleted');
-        } catch (e) {
-          // Ignore delete errors
-        }
-      }, 5000);
-      return true;
-    } else {
-      const errorText = await res.text();
-      console.error('[DISCORD] Webhook test failed:', res.status, errorText);
-      return false;
-    }
-  } catch (err) {
-    console.error('[DISCORD] Webhook test error:', err.message);
-    return false;
-  }
-}
-
+async function updateDiscordServerList() { }
+async function testDiscordWebhook() { }
+*/
 function startDiscordServerListLoop() {
-  if (discordLoopInterval) return;
-
-  console.log('[DISCORD] Starting server list webhook loop (10s interval for testing)');
-
-  // Test the webhook first
-  testDiscordWebhook();
-
-  // Wait 15 seconds to ensure server data is available (update loop runs every 5s)
-  setTimeout(() => {
-    console.log('[DISCORD] Running initial update...');
-    updateDiscordServerList();
-
-    // Then update every 10 seconds for testing
-    discordLoopInterval = setInterval(updateDiscordServerList, DISCORD_UPDATE_INTERVAL);
-  }, 15000);
+  // DISABLED - does nothing
 }
 
 app.listen(PORT, async () => {
