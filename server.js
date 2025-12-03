@@ -2985,8 +2985,9 @@ app.post('/api/admin/servers/:serverId/config', requireAuth, requireAdmin, async
 app.delete('/api/admin/servers/:serverId', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
-    const result = await proxyToManager(`/servers/${serverId}`, 'DELETE');
-    console.log(`[ADMIN] Deleted server ${serverId}`);
+    const sourceNum = parseInt(req.query.source) || 1;
+    const result = await proxyToSpecificManager(sourceNum, `/servers/${serverId}`, 'DELETE');
+    console.log(`[ADMIN] Deleted server ${serverId} from manager ${sourceNum}`);
     res.json(result);
   } catch (err) {
     console.error('[ADMIN] Delete server error:', err.message);

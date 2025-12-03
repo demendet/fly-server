@@ -289,9 +289,20 @@ export class StateManager {
         server.riders = detailed.riders || [];
         server.session_state = detailed.session?.session_state;
         server.session_type = detailed.session?.session_type;
+        // Preserve connection status from detailed response if available
+        if (detailed.connection_status) {
+          server.liveTimingConnected = detailed.connection_status.connected;
+        }
       }
       // Add API source (1 or 2) so frontend can determine server IP
       server.apiSource = serverMap.get(server.id)?.source || 1;
+      // Ensure liveTimingConnected and remoteAdminConnected are preserved from original server data
+      // These come from the /servers list endpoint (camelCase from .NET Minimal API serialization)
+      // Also set PascalCase versions for frontend compatibility
+      server.liveTimingConnected = server.liveTimingConnected ?? false;
+      server.remoteAdminConnected = server.remoteAdminConnected ?? false;
+      server.LiveTimingConnected = server.liveTimingConnected;
+      server.RemoteAdminConnected = server.remoteAdminConnected;
       return server;
     });
 
