@@ -334,7 +334,8 @@ app.use(cors({
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
 
 app.use(express.json());
@@ -358,6 +359,8 @@ setInterval(() => {
 app.use('/api/', (req, res, next) => {
   // MXBMRP3 public endpoint - skip origin check
   if (req.path === '/records/top') return next();
+  // Analytics tracking - public endpoint for sendBeacon
+  if (req.path === '/analytics/track') return next();
 
   const origin = req.headers.origin || '';
   const referer = req.headers.referer || req.headers.referrer || '';
