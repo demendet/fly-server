@@ -432,7 +432,7 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('MXBikes Stats Server v3 - Fly.io Edition');
+  res.send('CBRServers API');
 });
 
 // =============================================================================

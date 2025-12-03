@@ -244,6 +244,12 @@ export class StateManager {
 
     const serverMap = new Map();
     let api1Count = 0, api2Count = 0, duplicateCount = 0;
+
+    // Debug: Log first server object to see all available fields
+    if (servers1 && servers1.length > 0 && this.alarmCounter % 100 === 1) {
+      console.log('[DEBUG] Server object fields:', JSON.stringify(servers1[0], null, 2));
+    }
+
     (servers1 || []).forEach(s => {
       serverMap.set(s.id, { server: s, source: 1 });
       api1Count++;
@@ -284,6 +290,8 @@ export class StateManager {
         server.session_state = detailed.session?.session_state;
         server.session_type = detailed.session?.session_type;
       }
+      // Add API source (1 or 2) so frontend can determine server IP
+      server.apiSource = serverMap.get(server.id)?.source || 1;
       return server;
     });
 
