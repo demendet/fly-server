@@ -3006,6 +3006,249 @@ app.post('/api/admin/servers', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// Reset track deformation/dynamics
+app.post('/api/admin/servers/:serverId/reset-track', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/reset-track`, 'POST');
+    console.log(`[ADMIN] Reset track on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Reset track error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Start specific session (practice, pre-qualify, qualify, warmup, race1, race2)
+app.post('/api/admin/servers/:serverId/start-session', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const { sessionType } = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/start-session`, 'POST', { sessionType });
+    console.log(`[ADMIN] Started session ${sessionType} on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Start session error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Black flag (disqualify) a player
+app.post('/api/admin/servers/:serverId/blackflag', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const { playerGuid, playerName, raceNumber } = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/blackflag`, 'POST', { playerGuid, playerName, raceNumber });
+    console.log(`[ADMIN] Black flagged player ${playerName || raceNumber} on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Black flag error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Make player admin in-game
+app.post('/api/admin/servers/:serverId/makeadmin', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const { playerGuid, playerName, raceNumber } = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/makeadmin`, 'POST', { playerGuid, playerName, raceNumber });
+    console.log(`[ADMIN] Made player ${playerName || raceNumber} admin on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Make admin error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Send raw remote admin command
+app.post('/api/admin/servers/:serverId/remoteadmin/command', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const { command } = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/remoteadmin/command`, 'POST', { command });
+    console.log(`[ADMIN] Sent remote admin command to server ${serverId}: ${command}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Remote admin command error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get server admins list
+app.get('/api/admin/servers/:serverId/admins', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/admins`, 'GET');
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Get server admins error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add server admin
+app.post('/api/admin/servers/:serverId/admins', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const adminData = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/admins`, 'POST', adminData);
+    console.log(`[ADMIN] Added admin ${adminData.name} to server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Add server admin error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove server admin
+app.delete('/api/admin/servers/:serverId/admins/:adminId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId, adminId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/admins/${adminId}`, 'DELETE');
+    console.log(`[ADMIN] Removed admin ${adminId} from server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Remove server admin error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get server whitelist
+app.get('/api/admin/servers/:serverId/whitelist', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/whitelist`, 'GET');
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Get whitelist error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add player to whitelist
+app.post('/api/admin/servers/:serverId/whitelist', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const entryData = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/whitelist`, 'POST', entryData);
+    console.log(`[ADMIN] Added ${entryData.name || entryData.guid} to whitelist on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Add to whitelist error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update whitelist entry (full MXB fields support)
+app.put('/api/admin/servers/:serverId/whitelist/:entryIndex', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId, entryIndex } = req.params;
+    const entryData = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/whitelist/${entryIndex}`, 'PUT', entryData);
+    console.log(`[ADMIN] Updated whitelist entry ${entryIndex} on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Update whitelist entry error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove player from whitelist
+app.delete('/api/admin/servers/:serverId/whitelist/:entryId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId, entryId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/whitelist/${entryId}`, 'DELETE');
+    console.log(`[ADMIN] Removed entry ${entryId} from whitelist on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Remove from whitelist error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update whitelist (reload from file)
+app.post('/api/admin/servers/:serverId/whitelist/reload', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/whitelist/reload`, 'POST');
+    console.log(`[ADMIN] Reloaded whitelist on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Reload whitelist error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// TRACK LIST & SERVER CONFIG ENDPOINTS
+// ==========================================
+
+// Helper to proxy to a specific manager by source number (1 or 2)
+async function proxyToSpecificManager(sourceNum, endpoint, method = 'GET', body = null) {
+  const sources = getApiSources();
+  const targetId = sourceNum === 2 ? 'manager2' : 'manager1';
+  const source = sources.find(s => s.id === targetId);
+
+  if (!source) {
+    throw new Error(`Manager ${sourceNum} not configured`);
+  }
+
+  return await fetchFromManager(source, endpoint, method, body);
+}
+
+// Get tracks from specific manager (for track selection in server config)
+app.get('/api/admin/tracks', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const sourceNum = parseInt(req.query.source) || 1;
+    const result = await proxyToSpecificManager(sourceNum, '/tracks', 'GET');
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Get tracks error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get full server configuration
+app.get('/api/admin/servers/:serverId/config', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/config`, 'GET');
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Get server config error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update server configuration (PUT - comprehensive update)
+app.put('/api/admin/servers/:serverId/config', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const config = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/config`, 'PUT', config);
+    console.log(`[ADMIN] Updated full config for server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Update server config error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create new server on specific manager
+app.post('/api/admin/servers/create', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const sourceNum = parseInt(req.query.source) || 1;
+    const config = req.body;
+    const result = await proxyToSpecificManager(sourceNum, '/servers/create', 'POST', config);
+    console.log(`[ADMIN] Created new server on manager ${sourceNum}: ${config.name || 'unnamed'}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Create server error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ==========================================
 // ANALYTICS ENDPOINTS
 // ==========================================
