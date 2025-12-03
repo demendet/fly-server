@@ -361,6 +361,8 @@ app.use('/api/', (req, res, next) => {
   if (req.path === '/records/top') return next();
   // Analytics tracking - public endpoint for sendBeacon
   if (req.path === '/analytics/track') return next();
+  // CBR overlay plugin - player lookup by GUID
+  if (req.path.match(/^\/player\/[A-Za-z0-9]+$/) && req.method === 'GET') return next();
 
   const origin = req.headers.origin || '';
   const referer = req.headers.referer || req.headers.referrer || '';
@@ -708,6 +710,29 @@ app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
     res.json({ success: true, deleted: results });
   } catch (err) {
     console.error('[ADMIN] Cleanup error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Simple player lookup by GUID - used by CBR overlay plugin
+app.get('/api/player/:guid', async (req, res) => {
+  try {
+    const { guid } = req.params;
+    const player = await db.getPlayer(guid.toUpperCase());
+    if (!player) {
+      return res.status(404).json({ error: 'Player not found' });
+    }
+    // Return basic info for overlay
+    res.json({
+      guid: player.guid,
+      displayName: player.displayName,
+      mmr: player.mmr || 1000,
+      safetyRating: player.safetyRating || 0.5,
+      totalRaces: player.totalRaces || 0,
+      wins: player.wins || 0,
+      podiums: player.podiums || 0
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
