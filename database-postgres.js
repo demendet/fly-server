@@ -835,7 +835,10 @@ export class PostgresDatabaseManager {
       safetyRating: row.safetyRating,
       totalRaces: row.totalRaces,
       wins: row.wins,
+      podiums: row.podiums,
+      holeshots: row.holeshots,
       lastSeen: row.lastSeen ? parseInt(row.lastSeen) : null,
+      firstSeen: row.firstSeen ? parseInt(row.firstSeen) : null,
       currentServer: row.currentServer,
       profileImageUrl: row.steamAvatarUrl || null
     };
@@ -843,7 +846,7 @@ export class PostgresDatabaseManager {
 
   // Get ALL players with slim data (for bulk endpoint - fast, small payload)
   async getAllPlayersSlim() {
-    const result = await this.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, "lastSeen", "currentServer", "steamAvatarUrl" FROM players ORDER BY "lastSeen" DESC');
+    const result = await this.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl" FROM players ORDER BY "lastSeen" DESC');
     return result.rows.map(row => this.rowToPlayerSlim(row));
   }
 
