@@ -366,6 +366,31 @@ export class PostgresDatabaseManager {
         console.log('[POSTGRES] Steam avatar migration:', migrationErr.message);
       }
 
+      // Feature Requests table - for admin feature/bug requests to developer
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS feature_requests (
+          id TEXT PRIMARY KEY,
+          "requestIndex" SERIAL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          type TEXT DEFAULT 'feature',
+          status TEXT DEFAULT 'pending',
+          "submittedBy" TEXT NOT NULL,
+          "submittedByName" TEXT NOT NULL,
+          "submittedByGuid" TEXT,
+          "developerComment" TEXT,
+          upvotes TEXT[] DEFAULT '{}',
+          downvotes TEXT[] DEFAULT '{}',
+          "createdAt" BIGINT NOT NULL,
+          "updatedAt" BIGINT
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_feature_requests_status ON feature_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_feature_requests_created ON feature_requests("createdAt" DESC);
+      `);
+
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
       client.release();
@@ -2063,6 +2088,130 @@ export class PostgresDatabaseManager {
       createdAt: row.createdAt ? parseInt(row.createdAt) : null,
       updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null,
       expiresAt: row.expiresAt ? parseInt(row.expiresAt) : null
+    };
+  }
+
+  // ============================================
+  // Feature Requests
+  // ============================================
+
+  async getAllFeatureRequests() {
+    const result = await this.pool.query(`
+      SELECT * FROM feature_requests
+      ORDER BY (COALESCE(array_length(upvotes, 1), 0) - COALESCE(array_length(downvotes, 1), 0)) DESC,
+               "createdAt" DESC
+    `);
+
+    return result.rows.map(row => this.rowToFeatureRequest(row));
+  }
+
+  async createFeatureRequest(data) {
+    const id = `fr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+
+    const result = await this.pool.query(`
+      INSERT INTO feature_requests (id, title, description, type, status, "submittedBy", "submittedByName", "submittedByGuid", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING *
+    `, [
+      id,
+      data.title,
+      data.description,
+      data.type || 'feature',
+      'pending',
+      data.submittedBy,
+      data.submittedByName,
+      data.submittedByGuid || null,
+      now
+    ]);
+
+    return this.rowToFeatureRequest(result.rows[0]);
+  }
+
+  async updateFeatureRequest(id, updates) {
+    const now = Date.now();
+    const result = await this.pool.query(`
+      UPDATE feature_requests
+      SET status = COALESCE($1, status),
+          "developerComment" = COALESCE($2, "developerComment"),
+          "updatedAt" = $3
+      WHERE id = $4
+      RETURNING *
+    `, [
+      updates.status || null,
+      updates.developerComment !== undefined ? updates.developerComment : null,
+      now,
+      id
+    ]);
+
+    return result.rows.length > 0 ? this.rowToFeatureRequest(result.rows[0]) : null;
+  }
+
+  async voteFeatureRequest(id, odg, vote) {
+    const now = Date.now();
+    let query;
+
+    if (vote === 'up') {
+      // Add to upvotes, remove from downvotes
+      query = `
+        UPDATE feature_requests
+        SET upvotes = array_append(array_remove(upvotes, $1), $1),
+            downvotes = array_remove(downvotes, $1),
+            "updatedAt" = $2
+        WHERE id = $3
+        RETURNING *
+      `;
+    } else if (vote === 'down') {
+      // Add to downvotes, remove from upvotes
+      query = `
+        UPDATE feature_requests
+        SET downvotes = array_append(array_remove(downvotes, $1), $1),
+            upvotes = array_remove(upvotes, $1),
+            "updatedAt" = $2
+        WHERE id = $3
+        RETURNING *
+      `;
+    } else {
+      // Remove from both (vote = 'none')
+      query = `
+        UPDATE feature_requests
+        SET upvotes = array_remove(upvotes, $1),
+            downvotes = array_remove(downvotes, $1),
+            "updatedAt" = $2
+        WHERE id = $3
+        RETURNING *
+      `;
+    }
+
+    const result = await this.pool.query(query, [odg, now, id]);
+    return result.rows.length > 0 ? this.rowToFeatureRequest(result.rows[0]) : null;
+  }
+
+  async deleteFeatureRequest(id) {
+    const result = await this.pool.query('DELETE FROM feature_requests WHERE id = $1 RETURNING id', [id]);
+    return result.rows.length > 0;
+  }
+
+  rowToFeatureRequest(row) {
+    if (!row) return null;
+    const upvotes = row.upvotes || [];
+    const downvotes = row.downvotes || [];
+    return {
+      id: row.id,
+      requestIndex: row.requestIndex,
+      title: row.title,
+      description: row.description,
+      type: row.type,
+      status: row.status,
+      submittedBy: row.submittedBy,
+      submittedByName: row.submittedByName,
+      submittedByGuid: row.submittedByGuid,
+      developerComment: row.developerComment,
+      upvotes: upvotes,
+      downvotes: downvotes,
+      voteScore: upvotes.length - downvotes.length,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
     };
   }
 

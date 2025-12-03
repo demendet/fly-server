@@ -2020,6 +2020,105 @@ app.delete('/api/admin/announcements/:id', requireAuth, requireAdmin, async (req
   }
 });
 
+// ============================================
+// Feature Requests - Admin feature/bug request system
+// ============================================
+
+// Get all feature requests (sorted by vote score)
+app.get('/api/admin/feature-requests', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const requests = await db.getAllFeatureRequests();
+    res.json(requests);
+  } catch (err) {
+    console.error('[FEATURE_REQUESTS] Error fetching:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create new feature request (any admin/mod)
+app.post('/api/admin/feature-requests', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { title, description, type } = req.body;
+
+    if (!title || !description) {
+      return res.status(400).json({ error: 'Title and description are required' });
+    }
+
+    const request = await db.createFeatureRequest({
+      title,
+      description,
+      type: type || 'feature',
+      submittedBy: req.userId,
+      submittedByName: req.userProfile?.displayName || 'Admin',
+      submittedByGuid: req.userProfile?.guid || null
+    });
+
+    console.log(`[FEATURE_REQUESTS] Created by ${req.userProfile?.displayName}: "${title}"`);
+    res.json({ success: true, request });
+  } catch (err) {
+    console.error('[FEATURE_REQUESTS] Error creating:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update feature request status/comment (developer only)
+app.put('/api/admin/feature-requests/:id', requireAuth, requireRoot, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, developerComment } = req.body;
+
+    const request = await db.updateFeatureRequest(id, { status, developerComment });
+
+    if (!request) {
+      return res.status(404).json({ error: 'Feature request not found' });
+    }
+
+    console.log(`[FEATURE_REQUESTS] Updated ${id} - status: ${status}`);
+    res.json({ success: true, request });
+  } catch (err) {
+    console.error('[FEATURE_REQUESTS] Error updating:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Vote on feature request
+app.post('/api/admin/feature-requests/:id/vote', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { vote } = req.body; // 'up', 'down', or 'none' to remove vote
+    const odg = req.userId;
+
+    const request = await db.voteFeatureRequest(id, odg, vote);
+
+    if (!request) {
+      return res.status(404).json({ error: 'Feature request not found' });
+    }
+
+    res.json({ success: true, request });
+  } catch (err) {
+    console.error('[FEATURE_REQUESTS] Error voting:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete feature request (developer only)
+app.delete('/api/admin/feature-requests/:id', requireAuth, requireRoot, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await db.deleteFeatureRequest(id);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Feature request not found' });
+    }
+
+    console.log(`[FEATURE_REQUESTS] Deleted ${id} by ${req.userProfile?.displayName}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[FEATURE_REQUESTS] Error deleting:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function getApiSources() {
   return [
     { id: 'manager1', url: env.MXBIKES_API_URL_1, key: env.MXBIKES_API_KEY_1 },
