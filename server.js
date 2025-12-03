@@ -2975,8 +2975,14 @@ async function flushAnalyticsToFirestore() {
       pageViews: 0,
       visitors: [],
       pageViewsByPage: {},
-      deviceBreakdown: { desktop: 0, mobile: 0, tablet: 0 }
+      deviceBreakdown: { desktop: 0, mobile: 0, tablet: 0 },
+      hourlyActivity: Array(24).fill(0)
     };
+
+    // Ensure hourlyActivity exists for older documents
+    if (!dailyData.hourlyActivity) {
+      dailyData.hourlyActivity = Array(24).fill(0);
+    }
 
     // Process cached page views
     const newVisitors = new Set(dailyData.visitors || []);
@@ -2996,6 +3002,10 @@ async function flushAnalyticsToFirestore() {
       if (pv.deviceType && dailyData.deviceBreakdown[pv.deviceType] !== undefined) {
         dailyData.deviceBreakdown[pv.deviceType]++;
       }
+
+      // Track by hour (UTC)
+      const hour = new Date(pv.timestamp).getUTCHours();
+      dailyData.hourlyActivity[hour] = (dailyData.hourlyActivity[hour] || 0) + 1;
     }
 
     dailyData.visitors = Array.from(newVisitors);
@@ -3075,6 +3085,13 @@ app.get('/api/admin/analytics', requireAuth, requireAdmin, async (req, res) => {
         deviceBreakdown.mobile += data.deviceBreakdown.mobile || 0;
         deviceBreakdown.tablet += data.deviceBreakdown.tablet || 0;
       }
+
+      // Aggregate hourly activity (real data)
+      if (data.hourlyActivity && Array.isArray(data.hourlyActivity)) {
+        for (let i = 0; i < 24; i++) {
+          hourlyActivity[i] += data.hourlyActivity[i] || 0;
+        }
+      }
     });
 
     totalVisitors = allVisitors.size;
@@ -3093,14 +3110,6 @@ app.get('/api/admin/analytics', requireAuth, requireAdmin, async (req, res) => {
       .map(([page, views]) => ({ page, views }))
       .sort((a, b) => b.views - a.views)
       .slice(0, 10);
-
-    // Simulate hourly activity (distribute based on typical patterns)
-    const totalDayViews = totalPageViews / (days || 1);
-    const hourlyPattern = [2, 1, 1, 1, 1, 2, 4, 6, 8, 8, 7, 6, 6, 7, 8, 9, 10, 9, 8, 7, 6, 5, 4, 3];
-    const patternSum = hourlyPattern.reduce((a, b) => a + b, 0);
-    for (let i = 0; i < 24; i++) {
-      hourlyActivity[i] = Math.round((hourlyPattern[i] / patternSum) * totalDayViews);
-    }
 
     res.json({
       dailyStats,
