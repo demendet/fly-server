@@ -2398,7 +2398,8 @@ app.post('/api/player/:guid/warnings/:warningId/acknowledge', requireAuth, async
       return res.status(404).json({ error: 'Warning not found or already acknowledged' });
     }
 
-    // Auto-unban the player from all sources
+    // Auto-unban the player from all sources using full-unban
+    // This removes from blacklist and runs !blacklist update on all servers
     console.log(`[WARNINGS] Player ${upperGuid} acknowledged warning ${warningId}, auto-unbanning...`);
 
     const sources = getApiSources();
@@ -2410,17 +2411,31 @@ app.post('/api/player/:guid/warnings/:warningId/acknowledge', requireAuth, async
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
 
-        for (const server of servers) {
-          const serverId = server.id || server.Id;
+        if (servers.length > 0) {
+          const firstServer = servers[0];
+          const serverId = firstServer.id || firstServer.Id;
           try {
-            await fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', {
-              playerGuid: upperGuid,
-              playerName: warning.playerName || 'Unknown'
+            // Use full-unban endpoint (handles blacklist removal + !blacklist update)
+            // Disable unban message since this is automatic after warning acknowledgment
+            await fetchFromManager(source, `/servers/${serverId}/full-unban`, 'POST', {
+              PlayerGuid: upperGuid,
+              SendUnbanMessage: false // Don't send unban message for warning acknowledgment
             });
-            unbanResults.push({ serverId, success: true });
-          } catch (unbanErr) {
-            // Might not be banned on this server, that's okay
-            unbanResults.push({ serverId, success: false, error: unbanErr.message });
+            unbanResults.push({ source: source.id, success: true, endpoint: 'full-unban' });
+            console.log(`[WARNINGS] Unban succeeded via full-unban on ${source.id}`);
+          } catch (fullUnbanErr) {
+            console.log(`[WARNINGS] full-unban failed on ${source.id}: ${fullUnbanErr.message}, trying regular unban`);
+            // Fallback to regular unban
+            try {
+              await fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', {
+                playerGuid: upperGuid,
+                playerName: warning.playerName || 'Unknown'
+              });
+              unbanResults.push({ source: source.id, success: true, endpoint: 'unban' });
+            } catch (unbanErr) {
+              // Might not be banned on this server, that's okay
+              unbanResults.push({ source: source.id, success: false, error: unbanErr.message });
+            }
           }
         }
       } catch (sourceErr) {
@@ -2493,6 +2508,7 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
     await new Promise(resolve => setTimeout(resolve, 200));
 
     // Ban the player on all servers until they acknowledge the warning
+    // Use full-ban endpoint which handles: add to blacklist, kick, !blacklist update
     console.log(`[ADMIN] Warning issued to ${playerName} (${upperGuid}) - banning until acknowledged...`);
 
     const banResults = [];
@@ -2503,21 +2519,40 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
 
-        for (const server of servers) {
-          const serverId = server.id || server.Id;
+        if (servers.length > 0) {
+          const firstServer = servers[0];
+          const serverId = firstServer.id || firstServer.Id;
           try {
-            await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
-              playerGuid: upperGuid,
-              playerName: playerName || 'Unknown',
-              reason: banReason,
-              duration: 0, // Permanent until acknowledged
-              isPermanent: true,
-              sendPrivateMessage: false, // Don't send ban message, we already sent warning message
-              sendGlobalMessage: false   // Don't broadcast ban, warning was already broadcast
+            // Use full-ban endpoint (handles blacklist + kick + !blacklist update)
+            // Disable ban messages since we already sent warning messages
+            await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
+              PlayerGuid: upperGuid,
+              PlayerName: playerName || 'Unknown',
+              Reason: banReason,
+              Duration: 0,
+              DurationType: 5, // Permanent (BanDurationType.Permanent)
+              IsGlobal: true,
+              SendPrivateMessage: false, // Don't send ban message, we already sent warning message
+              SendGlobalMessage: false   // Don't broadcast ban, warning was already broadcast
             });
-            banResults.push({ serverId, success: true });
-          } catch (banErr) {
-            banResults.push({ serverId, success: false, error: banErr.message });
+            banResults.push({ source: source.id, success: true, endpoint: 'full-ban' });
+            console.log(`[ADMIN] Warning ban succeeded via full-ban on ${source.id}`);
+          } catch (fullBanErr) {
+            console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying regular ban`);
+            // Fallback to regular ban (won't kick or update blacklist, but at least creates record)
+            try {
+              await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+                playerGuid: upperGuid,
+                playerName: playerName || 'Unknown',
+                reason: banReason,
+                duration: 0,
+                isPermanent: true,
+                isGlobal: true
+              });
+              banResults.push({ source: source.id, success: true, endpoint: 'ban' });
+            } catch (banErr) {
+              banResults.push({ source: source.id, success: false, error: banErr.message });
+            }
           }
         }
       } catch (sourceErr) {
