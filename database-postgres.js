@@ -436,6 +436,18 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_support_tickets_created ON support_tickets("createdAt" DESC);
       `);
 
+      // Migration: Add missing columns to support_tickets if they don't exist
+      try {
+        await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "reporterGuid" TEXT`);
+        await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "reporterName" TEXT`);
+        await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "issueType" TEXT`);
+        await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS resolution TEXT`);
+        await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "resolvedBy" TEXT`);
+        await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "resolvedAt" BIGINT`);
+      } catch (migrationErr) {
+        console.log('[POSTGRES] support_tickets migration:', migrationErr.message);
+      }
+
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
       client.release();
