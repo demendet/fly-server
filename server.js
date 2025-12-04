@@ -2378,14 +2378,16 @@ app.post('/api/player/:guid/warnings/:warningId/acknowledge', requireAuth, async
     const { guid, warningId } = req.params;
     const upperGuid = guid.toUpperCase();
 
-    // Verify the player owns this GUID (check their linked accounts)
-    const user = await db.getUser(req.user.uid);
-    if (!user) {
+    // Verify the player owns this GUID (check their linked accounts from Firestore)
+    const userDoc = await firebaseAdmin.firestore().collection('users').doc(req.userId).get();
+    if (!userDoc.exists) {
       return res.status(403).json({ error: 'User not found' });
     }
 
+    const userData = userDoc.data();
+
     // Check if this GUID is linked to the user
-    const linkedPlayer = user.linkedPlayers?.find(p => p.guid.toUpperCase() === upperGuid);
+    const linkedPlayer = userData.linkedPlayers?.find(p => p.guid.toUpperCase() === upperGuid);
     if (!linkedPlayer) {
       return res.status(403).json({ error: 'This player is not linked to your account' });
     }
