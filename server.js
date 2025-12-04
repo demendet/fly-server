@@ -3153,9 +3153,13 @@ app.post('/api/admin/sync-bans', requireAuth, requireAdmin, async (req, res) => 
 app.post('/api/admin/servers/:serverId/kick', requireAuth, requireModerator, async (req, res) => {
   try {
     const { serverId } = req.params;
-    const { playerGuid } = req.body;
-    const result = await proxyToManager(`/servers/${serverId}/kick`, 'POST', { playerGuid });
-    console.log(`[ADMIN] Kicked player ${playerGuid} from server ${serverId}`);
+    const { playerGuid, playerName, reason } = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/kick`, 'POST', {
+      playerGuid,
+      playerName,
+      reason
+    });
+    console.log(`[ADMIN] Kicked player ${playerName || playerGuid} from server ${serverId}${reason ? ` - Reason: ${reason}` : ''}`);
     res.json(result);
   } catch (err) {
     console.error('[ADMIN] Kick player error:', err.message);
