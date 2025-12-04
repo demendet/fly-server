@@ -1667,17 +1667,56 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
         });
         console.log(`[ADMIN] Warning created for ${report.offenderName}: ${warningReason}`);
 
-        // 2. Send warning message in-game via Manager
+        // Get message templates from our database
+        const templates = await db.getMessageTemplates();
+
+        // Format warning messages with placeholders
+        const formatMessage = (template) => {
+          return template
+            .replace(/{name}/g, report.offenderName || 'Unknown')
+            .replace(/{reason}/g, warningReason || 'No reason provided')
+            .slice(0, 99);
+        };
+
+        // 2. Send warning messages in-game using our templates
         const sources = getApiSources();
         for (const source of sources) {
           try {
-            await fetchFromManager(source, '/warn', 'POST', {
-              playerGuid: upperGuid,
-              playerName: report.offenderName,
-              reason: warningReason
-            });
-          } catch (msgErr) {
-            // Player might not be online
+            const serversResp = await fetchFromManager(source, '/servers');
+            const servers = Array.isArray(serversResp) ? serversResp : [];
+            if (servers.length > 0) {
+              const firstServer = servers[0];
+              const serverId = firstServer.id || firstServer.Id;
+
+              // Send private warning message if enabled
+              if (templates.warningMessageEnabled && templates.warningMessageTemplate) {
+                try {
+                  const privateMsg = formatMessage(templates.warningMessageTemplate);
+                  await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+                    message: privateMsg,
+                    targetGuid: upperGuid
+                  });
+                  console.log(`[REPORTS] Sent warning private message to ${report.offenderName}`);
+                } catch (msgErr) {
+                  // Player might not be online
+                }
+              }
+
+              // Send global warning message if enabled
+              if (templates.warningGlobalMessageEnabled && templates.warningGlobalMessageTemplate) {
+                try {
+                  const globalMsg = formatMessage(templates.warningGlobalMessageTemplate);
+                  await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+                    message: globalMsg
+                  });
+                  console.log(`[REPORTS] Sent warning global message on ${source.id}`);
+                } catch (msgErr) {
+                  // Continue even if message fails
+                }
+              }
+            }
+          } catch (sourceErr) {
+            // Continue to next source
           }
         }
 
@@ -2603,23 +2642,62 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
       reportId
     });
 
+    // Get message templates from our database
+    const templates = await db.getMessageTemplates();
+
+    // Format warning messages with placeholders
+    const formatMessage = (template) => {
+      return template
+        .replace(/{name}/g, playerName || 'Unknown')
+        .replace(/{reason}/g, reason || 'No reason provided')
+        .slice(0, 99);
+    };
+
     // First, send the warning message to the player in-game (before banning/kicking)
     console.log(`[ADMIN] Sending warning message to ${playerName} (${upperGuid})...`);
 
     const sources = getApiSources();
     const messageResults = [];
 
-    // Send warning message via Manager's /warn endpoint (sends private + global messages)
+    // Send warning messages manually using our templates
     for (const source of sources) {
       try {
-        const result = await fetchFromManager(source, '/warn', 'POST', {
-          playerGuid: upperGuid,
-          playerName: playerName || 'Unknown',
-          reason: reason
-        });
-        messageResults.push({ source: source.id, success: true, result });
+        const serversResp = await fetchFromManager(source, '/servers');
+        const servers = Array.isArray(serversResp) ? serversResp : [];
+        if (servers.length > 0) {
+          const firstServer = servers[0];
+          const serverId = firstServer.id || firstServer.Id;
+
+          // Send private warning message if enabled
+          if (templates.warningMessageEnabled && templates.warningMessageTemplate) {
+            try {
+              const privateMsg = formatMessage(templates.warningMessageTemplate);
+              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+                message: privateMsg,
+                targetGuid: upperGuid
+              });
+              console.log(`[ADMIN] Sent warning private message to ${playerName}`);
+            } catch (msgErr) {
+              console.log(`[ADMIN] Warning private message failed (player may be offline): ${msgErr.message}`);
+            }
+          }
+
+          // Send global warning message if enabled
+          if (templates.warningGlobalMessageEnabled && templates.warningGlobalMessageTemplate) {
+            try {
+              const globalMsg = formatMessage(templates.warningGlobalMessageTemplate);
+              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+                message: globalMsg
+              });
+              console.log(`[ADMIN] Sent warning global message on ${source.id}`);
+              messageResults.push({ source: source.id, success: true });
+            } catch (msgErr) {
+              console.log(`[ADMIN] Warning global message failed: ${msgErr.message}`);
+              messageResults.push({ source: source.id, success: false, error: msgErr.message });
+            }
+          }
+        }
       } catch (msgErr) {
-        // Player might not be online, that's okay
         messageResults.push({ source: source.id, success: false, error: msgErr.message });
       }
     }
@@ -2886,6 +2964,8 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
     const sources = getApiSources();
     const results = [];
     const errors = [];
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
+    const isGlobal = banData.isGlobal !== false; // Default to true if not explicitly false
 
     // Calculate expiry timestamp
     let expiresAt = null;
@@ -2902,6 +2982,23 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
       expiresAt = now + durationMs;
     }
 
+    // Get message templates from our database
+    const templates = await db.getMessageTemplates();
+
+    // Format duration string for messages
+    const durationStr = isPermanent ? 'permanently' : `${banData.duration} ${banData.durationType?.toLowerCase() || 'hours'}`;
+
+    // Format messages with placeholders
+    const formatMessage = (template) => {
+      return template
+        .replace(/{name}/g, banData.playerName || 'Unknown')
+        .replace(/{reason}/g, banData.reason || 'No reason provided')
+        .replace(/{duration}/g, durationStr)
+        .slice(0, 99); // Enforce 99 char limit
+    };
+
+    // Send messages before banning (so player can receive them)
+    let messageSent = false;
     for (const source of sources) {
       try {
         const serversResp = await fetchFromManager(source, '/servers');
@@ -2909,16 +3006,58 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
         if (servers.length > 0) {
           const firstServer = servers[0];
           const serverId = firstServer.id || firstServer.Id;
-          // Use full-ban endpoint if available, fallback to ban endpoint
+
+          // Send private message to player if enabled
+          if (templates.banPrivateMessageEnabled && templates.banPrivateMessageTemplate && !messageSent) {
+            try {
+              const privateMsg = formatMessage(templates.banPrivateMessageTemplate);
+              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+                message: privateMsg,
+                targetGuid: banData.playerGuid
+              });
+              console.log(`[ADMIN] Sent ban private message to ${banData.playerName}`);
+            } catch (msgErr) {
+              // Player might not be online, that's ok
+              console.log(`[ADMIN] Private ban message not sent (player may be offline): ${msgErr.message}`);
+            }
+          }
+
+          // Send global message if enabled
+          if (templates.banGlobalMessageEnabled && templates.banGlobalMessageTemplate && !messageSent) {
+            try {
+              const globalMsg = formatMessage(templates.banGlobalMessageTemplate);
+              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+                message: globalMsg
+              });
+              console.log(`[ADMIN] Sent ban global message on ${source.id}`);
+              messageSent = true; // Only send global message once
+            } catch (msgErr) {
+              console.log(`[ADMIN] Global ban message failed: ${msgErr.message}`);
+            }
+          }
+        }
+      } catch (err) {
+        // Continue to ban even if messages fail
+      }
+    }
+
+    // Now perform the ban with messages disabled (we already sent them)
+    for (const source of sources) {
+      try {
+        const serversResp = await fetchFromManager(source, '/servers');
+        const servers = Array.isArray(serversResp) ? serversResp : [];
+        if (servers.length > 0) {
+          const firstServer = servers[0];
+          const serverId = firstServer.id || firstServer.Id;
           let result;
           let usedEndpoint = 'full-ban';
-          const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
-          const isGlobal = banData.isGlobal !== false; // Default to true if not explicitly false
           try {
             result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
               ...banData,
               isGlobal,
-              bannedBy: adminName
+              bannedBy: adminName,
+              SendPrivateMessage: false, // We already sent messages
+              SendGlobalMessage: false   // We already sent messages
             });
             console.log(`[ADMIN] Ban succeeded via full-ban on ${source.id} by ${adminName} (global: ${isGlobal})`);
           } catch (fullBanErr) {
@@ -2942,7 +3081,6 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
 
     // Store ban history
     if (results.length > 0) {
-      const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
       try {
         await db.addBanHistory({
           playerGuid: banData.playerGuid,
@@ -3008,45 +3146,111 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
     const results = [];
     const errors = [];
     let serverName = null;
+    let targetSource = null;
+    let targetServer = null;
 
-    // Try all managers - the one that owns this server will succeed
+    // Calculate expiry for history
+    let expiresAt = null;
+    const isPermanent = banData.durationType === 'Permanent' || !banData.duration;
+    if (!isPermanent && banData.duration) {
+      const now = Date.now();
+      const durationMs = {
+        'Minutes': banData.duration * 60 * 1000,
+        'Hours': banData.duration * 60 * 60 * 1000,
+        'Days': banData.duration * 24 * 60 * 60 * 1000,
+        'Months': banData.duration * 30 * 24 * 60 * 60 * 1000,
+        'Years': banData.duration * 365 * 24 * 60 * 60 * 1000
+      }[banData.durationType] || banData.duration * 60 * 60 * 1000;
+      expiresAt = now + durationMs;
+    }
+
+    // Get message templates from our database
+    const templates = await db.getMessageTemplates();
+
+    // Format duration string for messages
+    const durationStr = isPermanent ? 'permanently' : `${banData.duration} ${banData.durationType?.toLowerCase() || 'hours'}`;
+
+    // Format messages with placeholders
+    const formatMessage = (template) => {
+      return template
+        .replace(/{name}/g, banData.playerName || 'Unknown')
+        .replace(/{reason}/g, banData.reason || 'No reason provided')
+        .replace(/{duration}/g, durationStr)
+        .slice(0, 99); // Enforce 99 char limit
+    };
+
+    // Find the manager that owns this server
     for (const source of sources) {
       try {
-        // First check if this manager has this server
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
         const server = servers.find(s => (s.id || s.Id) === serverId);
 
-        if (!server) {
-          console.log(`[ADMIN] Server ${serverId} not found on ${source.id}, skipping`);
-          continue;
+        if (server) {
+          targetSource = source;
+          targetServer = server;
+          serverName = server.name || server.Name;
+          break;
         }
-
-        // Capture server name for ban history
-        serverName = server.name || server.Name || serverName;
-
-        // This manager has the server, do the ban
-        let result;
-        try {
-          result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
-            ...banData,
-            isGlobal,
-            bannedBy: adminName
-          });
-          console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverName} via full-ban on ${source.id}`);
-        } catch (fullBanErr) {
-          console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying basic ban`);
-          result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
-            ...banData,
-            isGlobal
-          });
-          console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverName} via basic ban on ${source.id}`);
-        }
-        results.push({ source: source.id, result, serverName });
       } catch (err) {
-        console.error(`[ADMIN] Ban failed on ${source.id}: ${err.message}`);
-        errors.push({ source: source.id, error: err.message });
+        // Continue searching
       }
+    }
+
+    if (!targetSource || !targetServer) {
+      return res.status(400).json({ success: false, error: `Server ${serverId} not found on any manager` });
+    }
+
+    // Send messages before banning
+    if (templates.banPrivateMessageEnabled && templates.banPrivateMessageTemplate) {
+      try {
+        const privateMsg = formatMessage(templates.banPrivateMessageTemplate);
+        await fetchFromManager(targetSource, `/servers/${serverId}/message`, 'POST', {
+          message: privateMsg,
+          targetGuid: banData.playerGuid
+        });
+        console.log(`[ADMIN] Sent ban private message to ${banData.playerName}`);
+      } catch (msgErr) {
+        console.log(`[ADMIN] Private ban message not sent (player may be offline): ${msgErr.message}`);
+      }
+    }
+
+    if (templates.banGlobalMessageEnabled && templates.banGlobalMessageTemplate) {
+      try {
+        const globalMsg = formatMessage(templates.banGlobalMessageTemplate);
+        await fetchFromManager(targetSource, `/servers/${serverId}/message`, 'POST', {
+          message: globalMsg
+        });
+        console.log(`[ADMIN] Sent ban global message on ${targetSource.id}`);
+      } catch (msgErr) {
+        console.log(`[ADMIN] Global ban message failed: ${msgErr.message}`);
+      }
+    }
+
+    // Now perform the ban with messages disabled
+    try {
+      let result;
+      try {
+        result = await fetchFromManager(targetSource, `/servers/${serverId}/full-ban`, 'POST', {
+          ...banData,
+          isGlobal,
+          bannedBy: adminName,
+          SendPrivateMessage: false,
+          SendGlobalMessage: false
+        });
+        console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverName} via full-ban on ${targetSource.id}`);
+      } catch (fullBanErr) {
+        console.log(`[ADMIN] full-ban failed on ${targetSource.id}: ${fullBanErr.message}, trying basic ban`);
+        result = await fetchFromManager(targetSource, `/servers/${serverId}/ban`, 'POST', {
+          ...banData,
+          isGlobal
+        });
+        console.log(`[ADMIN] Banned player ${banData.playerName} on server ${serverName} via basic ban on ${targetSource.id}`);
+      }
+      results.push({ source: targetSource.id, result, serverName });
+    } catch (err) {
+      console.error(`[ADMIN] Ban failed on ${targetSource.id}: ${err.message}`);
+      errors.push({ source: targetSource.id, error: err.message });
     }
 
     if (results.length === 0) {
@@ -3058,21 +3262,6 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
 
     // Store ban history with server name
     try {
-      // Calculate expiry for history
-      let expiresAt = null;
-      const isPermanent = banData.durationType === 'Permanent' || !banData.duration;
-      if (!isPermanent && banData.duration) {
-        const now = Date.now();
-        const durationMs = {
-          'Minutes': banData.duration * 60 * 1000,
-          'Hours': banData.duration * 60 * 60 * 1000,
-          'Days': banData.duration * 24 * 60 * 60 * 1000,
-          'Months': banData.duration * 30 * 24 * 60 * 60 * 1000,
-          'Years': banData.duration * 365 * 24 * 60 * 60 * 1000
-        }[banData.durationType] || banData.duration * 60 * 60 * 1000;
-        expiresAt = now + durationMs;
-      }
-
       await db.addBanHistory({
         playerGuid: banData.playerGuid,
         playerName: banData.playerName,
@@ -3085,8 +3274,8 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
         expiresAt,
         performedBy: adminName,
         sourceManager: results.map(r => r.source).join(','),
-        serverName: serverName, // Store which server they were banned from
-        evidenceUrl: banData.evidenceUrl || null // Video evidence from reports
+        serverName: serverName,
+        evidenceUrl: banData.evidenceUrl || null
       });
 
       // Reduce safety rating by 20% when banned
@@ -3118,7 +3307,20 @@ app.post('/api/admin/unban', requireAuth, requireAdmin, async (req, res) => {
     const sources = getApiSources();
     const results = [];
     const errors = [];
+    const adminName = req.userProfile?.displayName || req.user?.name || req.user?.email || 'Admin';
 
+    // Get message templates from our database
+    const templates = await db.getMessageTemplates();
+
+    // Format unban message with placeholders
+    const formatMessage = (template) => {
+      return template
+        .replace(/{name}/g, playerName || 'Unknown')
+        .slice(0, 99); // Enforce 99 char limit
+    };
+
+    // Send unban message before unbanning (only once)
+    let messageSent = false;
     for (const source of sources) {
       try {
         const serversResp = await fetchFromManager(source, '/servers');
@@ -3127,10 +3329,27 @@ app.post('/api/admin/unban', requireAuth, requireAdmin, async (req, res) => {
         if (servers.length > 0) {
           const firstServer = servers[0];
           const serverId = firstServer.id || firstServer.Id;
+
+          // Send unban message if enabled (only once globally)
+          if (templates.unbanMessageEnabled && templates.unbanMessageTemplate && !messageSent) {
+            try {
+              const unbanMsg = formatMessage(templates.unbanMessageTemplate);
+              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+                message: unbanMsg
+              });
+              console.log(`[ADMIN] Sent unban message on ${source.id}`);
+              messageSent = true;
+            } catch (msgErr) {
+              console.log(`[ADMIN] Unban message failed: ${msgErr.message}`);
+            }
+          }
+
+          // Perform the unban with message disabled
           try {
-            // Use full-unban endpoint if available, fallback to unban endpoint
-            const result = await fetchFromManager(source, `/servers/${serverId}/full-unban`, 'POST', { playerGuid })
-              .catch(() => fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', { playerGuid }));
+            const result = await fetchFromManager(source, `/servers/${serverId}/full-unban`, 'POST', {
+              playerGuid,
+              SendUnbanMessage: false // We already sent the message
+            }).catch(() => fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', { playerGuid }));
             results.push({ source: source.id, result });
           } catch (err) {
             errors.push({ source: source.id, error: err.message });
@@ -3150,7 +3369,7 @@ app.post('/api/admin/unban', requireAuth, requireAdmin, async (req, res) => {
           action: 'unban',
           reason: null,
           isGlobal: true,
-          performedBy: req.user?.email || 'Admin',
+          performedBy: adminName,
           sourceManager: results.map(r => r.source).join(',')
         });
       } catch (histErr) {
@@ -3329,6 +3548,49 @@ app.post('/api/admin/servers/:serverId/kick', requireAuth, requireModerator, asy
   try {
     const { serverId } = req.params;
     const { playerGuid, playerName, reason } = req.body;
+
+    // Get message templates from our database
+    const templates = await db.getMessageTemplates();
+
+    // Format kick messages with placeholders
+    const formatMessage = (template) => {
+      return template
+        .replace(/{name}/g, playerName || 'Unknown')
+        .replace(/{reason}/g, reason || 'No reason provided')
+        .slice(0, 99);
+    };
+
+    // Send kick messages before kicking
+    if (templates.kickPrivateMessageEnabled && templates.kickPrivateMessageTemplate) {
+      try {
+        const privateMsg = formatMessage(templates.kickPrivateMessageTemplate);
+        await proxyToManager(`/servers/${serverId}/message`, 'POST', {
+          message: privateMsg,
+          targetGuid: playerGuid
+        });
+        console.log(`[ADMIN] Sent kick private message to ${playerName}`);
+      } catch (msgErr) {
+        console.log(`[ADMIN] Kick private message failed: ${msgErr.message}`);
+      }
+    }
+
+    if (templates.kickGlobalMessageEnabled && templates.kickGlobalMessageTemplate) {
+      try {
+        const globalMsg = formatMessage(templates.kickGlobalMessageTemplate);
+        await proxyToManager(`/servers/${serverId}/message`, 'POST', {
+          message: globalMsg
+        });
+        console.log(`[ADMIN] Sent kick global message`);
+      } catch (msgErr) {
+        console.log(`[ADMIN] Kick global message failed: ${msgErr.message}`);
+      }
+    }
+
+    // Small delay to ensure messages are delivered before kick
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Perform the kick (manager's kick endpoint will also try to send messages,
+    // but we've already sent ours from our templates)
     const result = await proxyToManager(`/servers/${serverId}/kick`, 'POST', {
       playerGuid,
       playerName,
@@ -3933,43 +4195,40 @@ const LEADER_CHECK_INTERVAL = 3000;
 // MESSAGE SETTINGS & AUTOMATED MESSAGES API
 // ============================================================================
 
-// Get message templates and settings
+// Get message templates and settings (stored in our database)
 app.get('/api/admin/settings/messages', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const result = await proxyToManager('/settings/messages', 'GET');
-    res.json(result);
+    const templates = await db.getMessageTemplates();
+    res.json(templates);
   } catch (err) {
     console.error('[ADMIN] Get message settings error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Update message templates and settings (sends to ALL managers)
+// Update message templates and settings (stored in our database)
 app.put('/api/admin/settings/messages', requireAuth, requireAdmin, async (req, res) => {
   try {
     const settings = req.body;
-    // Use proxyToAllManagers to update settings on ALL managers, not just the first one
-    const { results, errors } = await proxyToAllManagers('/settings/messages', 'PUT', settings);
-    console.log(`[ADMIN] Updated message settings on ${results.length} manager(s), ${errors.length} error(s)`);
-
-    if (results.length === 0 && errors.length > 0) {
-      throw new Error(`All managers failed: ${errors.map(e => e.error).join(', ')}`);
-    }
-
-    // Return the first successful result for compatibility
-    res.json(results.length > 0 ? results[0].result : { success: true });
+    const updated = await db.updateMessageTemplates(settings);
+    console.log(`[ADMIN] Updated message templates in database`);
+    res.json(updated);
   } catch (err) {
     console.error('[ADMIN] Update message settings error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get automated messages for a server
+// ============================================================================
+// AUTOMATED MESSAGES API - Stored in our database, sent via manager
+// ============================================================================
+
+// Get automated messages for a specific server (includes global messages)
 app.get('/api/admin/servers/:serverId/automatedmessages', requireAuth, requireModerator, async (req, res) => {
   try {
     const { serverId } = req.params;
-    const result = await proxyToManager(`/servers/${serverId}/automatedmessages`, 'GET');
-    res.json(result);
+    const messages = await db.getAutomatedMessagesByServer(serverId);
+    res.json(messages);
   } catch (err) {
     console.error('[ADMIN] Get automated messages error:', err.message);
     res.status(500).json({ error: err.message });
@@ -3980,9 +4239,22 @@ app.get('/api/admin/servers/:serverId/automatedmessages', requireAuth, requireMo
 app.post('/api/admin/servers/:serverId/automatedmessages', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { serverId } = req.params;
-    const messageData = req.body;
-    const result = await proxyToManager(`/servers/${serverId}/automatedmessages`, 'POST', messageData);
-    console.log(`[ADMIN] Added automated message to server ${serverId}`);
+    const { message, intervalMinutes, isEnabled, isGlobal, serverName } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const result = await db.createAutomatedMessage({
+      message: message.slice(0, 99), // Enforce 99 char limit
+      intervalMinutes: intervalMinutes || 5,
+      isEnabled: isEnabled !== false,
+      isGlobal: isGlobal || false,
+      serverId: isGlobal ? null : serverId,
+      serverName: isGlobal ? null : serverName
+    });
+
+    console.log(`[ADMIN] Added automated message: "${message.slice(0, 30)}..." (${isGlobal ? 'global' : `server ${serverId}`})`);
     res.json(result);
   } catch (err) {
     console.error('[ADMIN] Add automated message error:', err.message);
@@ -3993,10 +4265,21 @@ app.post('/api/admin/servers/:serverId/automatedmessages', requireAuth, requireA
 // Update automated message
 app.put('/api/admin/servers/:serverId/automatedmessages/:messageId', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { serverId, messageId } = req.params;
-    const messageData = req.body;
-    const result = await proxyToManager(`/servers/${serverId}/automatedmessages/${messageId}`, 'PUT', messageData);
-    console.log(`[ADMIN] Updated automated message ${messageId} on server ${serverId}`);
+    const { messageId } = req.params;
+    const { message, intervalMinutes, isEnabled, isGlobal } = req.body;
+
+    const result = await db.updateAutomatedMessage(messageId, {
+      message: message?.slice(0, 99),
+      intervalMinutes,
+      isEnabled,
+      isGlobal
+    });
+
+    if (!result) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    console.log(`[ADMIN] Updated automated message ${messageId}`);
     res.json(result);
   } catch (err) {
     console.error('[ADMIN] Update automated message error:', err.message);
@@ -4007,66 +4290,51 @@ app.put('/api/admin/servers/:serverId/automatedmessages/:messageId', requireAuth
 // Delete automated message
 app.delete('/api/admin/servers/:serverId/automatedmessages/:messageId', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { serverId, messageId } = req.params;
-    const result = await proxyToManager(`/servers/${serverId}/automatedmessages/${messageId}`, 'DELETE');
-    console.log(`[ADMIN] Deleted automated message ${messageId} from server ${serverId}`);
-    res.json(result);
+    const { messageId } = req.params;
+    const deleted = await db.deleteAutomatedMessage(messageId);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    console.log(`[ADMIN] Deleted automated message ${messageId}`);
+    res.json({ success: true });
   } catch (err) {
     console.error('[ADMIN] Delete automated message error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get ALL automated messages from ALL managers and ALL servers
+// Get ALL automated messages (stored in our database)
 app.get('/api/admin/settings/automatedmessages', requireAuth, requireModerator, async (req, res) => {
   try {
-    const { results, errors } = await proxyToAllManagers('/settings/automatedmessages', 'GET');
-
-    // Merge results from all managers
-    const allMessages = [];
-    for (const { source, result } of results) {
-      if (Array.isArray(result)) {
-        for (const msg of result) {
-          allMessages.push({
-            ...msg,
-            managerId: source
-          });
-        }
-      }
-    }
-
-    res.json({ messages: allMessages, errors });
+    const messages = await db.getAllAutomatedMessages();
+    res.json({ messages, errors: [] });
   } catch (err) {
     console.error('[ADMIN] Get all automated messages error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Add automated message to a specific manager's server
+// Add automated message (global endpoint)
 app.post('/api/admin/settings/automatedmessages', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { serverId, message, intervalMinutes, isEnabled, isGlobal, managerId } = req.body;
+    const { serverId, serverName, message, intervalMinutes, isEnabled, isGlobal } = req.body;
 
-    if (!serverId || !message) {
-      return res.status(400).json({ error: 'Server ID and message are required' });
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Use specific manager if provided, otherwise use default proxy
-    const sources = getApiSources();
-    const targetSource = managerId ? sources.find(s => s.id === managerId) : sources[0];
-
-    if (!targetSource) {
-      return res.status(400).json({ error: 'Invalid manager specified' });
-    }
-
-    const result = await fetchFromManager(targetSource, `/servers/${serverId}/automatedmessages`, 'POST', {
-      message: message.slice(0, 99), // Enforce 99 char limit
+    const result = await db.createAutomatedMessage({
+      message: message.slice(0, 99),
       intervalMinutes: intervalMinutes || 5,
       isEnabled: isEnabled !== false,
-      isGlobal: isGlobal || false
+      isGlobal: isGlobal || false,
+      serverId: isGlobal ? null : serverId,
+      serverName: isGlobal ? null : serverName
     });
 
-    console.log(`[ADMIN] Added automated message to server ${serverId} on ${targetSource.id}`);
+    console.log(`[ADMIN] Added automated message: "${message.slice(0, 30)}..." (${isGlobal ? 'global' : `server ${serverId}`})`);
     res.json(result);
   } catch (err) {
     console.error('[ADMIN] Add automated message error:', err.message);
@@ -4074,63 +4342,149 @@ app.post('/api/admin/settings/automatedmessages', requireAuth, requireAdmin, asy
   }
 });
 
-// Delete automated message from specific manager
+// Delete automated message (global endpoint)
 app.delete('/api/admin/settings/automatedmessages/:messageId', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { messageId } = req.params;
-    const { serverId, managerId } = req.query;
+    const deleted = await db.deleteAutomatedMessage(messageId);
 
-    if (!serverId) {
-      return res.status(400).json({ error: 'Server ID is required' });
+    if (!deleted) {
+      return res.status(404).json({ error: 'Message not found' });
     }
 
-    const sources = getApiSources();
-    const targetSource = managerId ? sources.find(s => s.id === managerId) : sources[0];
-
-    if (!targetSource) {
-      return res.status(400).json({ error: 'Invalid manager specified' });
-    }
-
-    const result = await fetchFromManager(targetSource, `/servers/${serverId}/automatedmessages/${messageId}`, 'DELETE');
-    console.log(`[ADMIN] Deleted automated message ${messageId} from server ${serverId} on ${targetSource.id}`);
-    res.json(result);
+    console.log(`[ADMIN] Deleted automated message ${messageId}`);
+    res.json({ success: true });
   } catch (err) {
     console.error('[ADMIN] Delete automated message error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Toggle automated message enabled/disabled
+// Update automated message (global endpoint)
 app.put('/api/admin/settings/automatedmessages/:messageId', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { messageId } = req.params;
-    const { serverId, managerId, isEnabled, message, intervalMinutes, isGlobal } = req.body;
+    const { message, intervalMinutes, isEnabled, isGlobal } = req.body;
 
-    if (!serverId) {
-      return res.status(400).json({ error: 'Server ID is required' });
-    }
-
-    const sources = getApiSources();
-    const targetSource = managerId ? sources.find(s => s.id === managerId) : sources[0];
-
-    if (!targetSource) {
-      return res.status(400).json({ error: 'Invalid manager specified' });
-    }
-
-    const result = await fetchFromManager(targetSource, `/servers/${serverId}/automatedmessages/${messageId}`, 'PUT', {
-      message,
+    const result = await db.updateAutomatedMessage(messageId, {
+      message: message?.slice(0, 99),
       intervalMinutes,
       isEnabled,
       isGlobal
     });
 
-    console.log(`[ADMIN] Updated automated message ${messageId} on server ${serverId} on ${targetSource.id}`);
+    if (!result) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    console.log(`[ADMIN] Updated automated message ${messageId}`);
     res.json(result);
   } catch (err) {
     console.error('[ADMIN] Update automated message error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
+// ============================================================================
+// AUTOMATED MESSAGES SCHEDULER - Sends due messages to servers via manager
+// ============================================================================
+
+let automatedMessagesInterval = null;
+
+async function processAutomatedMessages() {
+  try {
+    // Get all messages that are due to be sent
+    const dueMessages = await db.getDueAutomatedMessages();
+
+    if (dueMessages.length === 0) return;
+
+    console.log(`[AUTO-MSG] Processing ${dueMessages.length} due automated messages`);
+
+    const sources = getApiSources();
+    if (sources.length === 0) {
+      console.log('[AUTO-MSG] No API sources available');
+      return;
+    }
+
+    // Get all servers from all managers
+    const allServers = [];
+    for (const source of sources) {
+      try {
+        const serversResp = await fetchFromManager(source, '/servers');
+        const servers = Array.isArray(serversResp) ? serversResp : [];
+        for (const server of servers) {
+          allServers.push({
+            ...server,
+            source,
+            serverId: server.id || server.Id
+          });
+        }
+      } catch (err) {
+        // Continue with other sources
+      }
+    }
+
+    if (allServers.length === 0) {
+      console.log('[AUTO-MSG] No servers available');
+      return;
+    }
+
+    // Process each due message
+    for (const msg of dueMessages) {
+      try {
+        if (msg.isGlobal) {
+          // Global message - send to ALL servers
+          for (const server of allServers) {
+            try {
+              await fetchFromManager(server.source, `/servers/${server.serverId}/message`, 'POST', {
+                message: msg.message
+              });
+            } catch (sendErr) {
+              // Continue with other servers
+            }
+          }
+          console.log(`[AUTO-MSG] Sent global message: "${msg.message.slice(0, 30)}..." to ${allServers.length} servers`);
+        } else if (msg.serverId) {
+          // Server-specific message - find the server and send
+          const targetServer = allServers.find(s => s.serverId === msg.serverId);
+          if (targetServer) {
+            await fetchFromManager(targetServer.source, `/servers/${targetServer.serverId}/message`, 'POST', {
+              message: msg.message
+            });
+            console.log(`[AUTO-MSG] Sent message to ${msg.serverName || msg.serverId}: "${msg.message.slice(0, 30)}..."`);
+          }
+        }
+
+        // Update lastSent timestamp
+        await db.updateAutomatedMessageLastSent(msg.id);
+      } catch (msgErr) {
+        console.error(`[AUTO-MSG] Failed to send message ${msg.id}:`, msgErr.message);
+      }
+    }
+  } catch (err) {
+    console.error('[AUTO-MSG] Error processing automated messages:', err.message);
+  }
+}
+
+function startAutomatedMessagesLoop() {
+  if (automatedMessagesInterval) return;
+
+  console.log('[AUTO-MSG] Starting automated messages scheduler (30s interval)');
+
+  // Process immediately on start
+  processAutomatedMessages();
+
+  // Then check every 30 seconds
+  automatedMessagesInterval = setInterval(processAutomatedMessages, 30 * 1000);
+}
+
+function stopAutomatedMessagesLoop() {
+  if (automatedMessagesInterval) {
+    clearInterval(automatedMessagesInterval);
+    automatedMessagesInterval = null;
+    console.log('[AUTO-MSG] Stopped automated messages scheduler');
+  }
+}
 
 // Discord Webhook for Server List - DISABLED
 // To re-enable: uncomment startDiscordServerListLoop() call in the leader election section
@@ -4270,10 +4624,14 @@ app.listen(PORT, async () => {
 
       // Start Discord server list webhook loop
       startDiscordServerListLoop();
+
+      // Start automated messages scheduler (sends to servers at intervals)
+      startAutomatedMessagesLoop();
     } else if (!acquired && isLeader) {
       isLeader = false;
       console.log(`[SERVER] ${machineId} lost leadership, becoming SECONDARY`);
       stopUpdateLoop();
+      stopAutomatedMessagesLoop();
     } else if (!acquired && !isLeader) {
     }
   };

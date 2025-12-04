@@ -456,6 +456,55 @@ export class PostgresDatabaseManager {
         console.log('[POSTGRES] support_tickets migration:', migrationErr.message);
       }
 
+      // Message Templates table (for ban/unban/warn/kick messages)
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS message_templates (
+          id TEXT PRIMARY KEY DEFAULT 'default',
+          "banPrivateMessageEnabled" BOOLEAN DEFAULT true,
+          "banPrivateMessageTemplate" TEXT DEFAULT 'You have been banned for {duration}. Reason: {reason}',
+          "banGlobalMessageEnabled" BOOLEAN DEFAULT true,
+          "banGlobalMessageTemplate" TEXT DEFAULT '{name} has been banned for {duration}. Reason: {reason}',
+          "unbanMessageEnabled" BOOLEAN DEFAULT true,
+          "unbanMessageTemplate" TEXT DEFAULT '{name} has been unbanned',
+          "warningMessageEnabled" BOOLEAN DEFAULT true,
+          "warningMessageTemplate" TEXT DEFAULT 'WARNING: {reason}',
+          "warningGlobalMessageEnabled" BOOLEAN DEFAULT true,
+          "warningGlobalMessageTemplate" TEXT DEFAULT '{name} has received a warning: {reason}',
+          "kickPrivateMessageEnabled" BOOLEAN DEFAULT true,
+          "kickPrivateMessageTemplate" TEXT DEFAULT 'You have been kicked. Reason: {reason}',
+          "kickGlobalMessageEnabled" BOOLEAN DEFAULT true,
+          "kickGlobalMessageTemplate" TEXT DEFAULT '{name} has been kicked. Reason: {reason}',
+          "updatedAt" BIGINT
+        )
+      `);
+
+      // Insert default row if not exists
+      await client.query(`
+        INSERT INTO message_templates (id) VALUES ('default')
+        ON CONFLICT (id) DO NOTHING
+      `);
+
+      // Automated Messages table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS automated_messages (
+          id TEXT PRIMARY KEY,
+          message TEXT NOT NULL,
+          "intervalMinutes" INTEGER NOT NULL DEFAULT 5,
+          "isEnabled" BOOLEAN DEFAULT true,
+          "isGlobal" BOOLEAN DEFAULT false,
+          "serverId" TEXT,
+          "serverName" TEXT,
+          "lastSent" BIGINT,
+          "createdAt" BIGINT NOT NULL,
+          "updatedAt" BIGINT
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_automated_messages_enabled ON automated_messages("isEnabled");
+        CREATE INDEX IF NOT EXISTS idx_automated_messages_server ON automated_messages("serverId");
+      `);
+
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
       client.release();
@@ -2392,12 +2441,15 @@ export class PostgresDatabaseManager {
     if (data.resolvedBy !== undefined) {
       fields.push(`"resolvedBy" = $${paramIndex++}`);
       values.push(data.resolvedBy);
-      fields.push(`"resolvedAt" = $${paramIndex++}`);
-      values.push(now);
     }
     if (data.resolvedByGuid !== undefined) {
       fields.push(`"resolvedByGuid" = $${paramIndex++}`);
       values.push(data.resolvedByGuid);
+    }
+    // Only set resolvedAt when status is actually 'resolved'
+    if (data.status === 'resolved') {
+      fields.push(`"resolvedAt" = $${paramIndex++}`);
+      values.push(now);
     }
 
     fields.push(`"updatedAt" = $${paramIndex++}`);
@@ -2436,6 +2488,259 @@ export class PostgresDatabaseManager {
       createdAt: row.createdAt ? parseInt(row.createdAt) : null,
       updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
     };
+  }
+
+  // ============ MESSAGE TEMPLATES ============
+
+  async getMessageTemplates() {
+    const result = await this.pool.query('SELECT * FROM message_templates WHERE id = $1', ['default']);
+    if (result.rows.length === 0) {
+      // Return defaults
+      return {
+        banPrivateMessageEnabled: true,
+        banPrivateMessageTemplate: 'You have been banned for {duration}. Reason: {reason}',
+        banGlobalMessageEnabled: true,
+        banGlobalMessageTemplate: '{name} has been banned for {duration}. Reason: {reason}',
+        unbanMessageEnabled: true,
+        unbanMessageTemplate: '{name} has been unbanned',
+        warningMessageEnabled: true,
+        warningMessageTemplate: 'WARNING: {reason}',
+        warningGlobalMessageEnabled: true,
+        warningGlobalMessageTemplate: '{name} has received a warning: {reason}',
+        kickPrivateMessageEnabled: true,
+        kickPrivateMessageTemplate: 'You have been kicked. Reason: {reason}',
+        kickGlobalMessageEnabled: true,
+        kickGlobalMessageTemplate: '{name} has been kicked. Reason: {reason}'
+      };
+    }
+    const row = result.rows[0];
+    return {
+      banPrivateMessageEnabled: row.banPrivateMessageEnabled,
+      banPrivateMessageTemplate: row.banPrivateMessageTemplate,
+      banGlobalMessageEnabled: row.banGlobalMessageEnabled,
+      banGlobalMessageTemplate: row.banGlobalMessageTemplate,
+      unbanMessageEnabled: row.unbanMessageEnabled,
+      unbanMessageTemplate: row.unbanMessageTemplate,
+      warningMessageEnabled: row.warningMessageEnabled,
+      warningMessageTemplate: row.warningMessageTemplate,
+      warningGlobalMessageEnabled: row.warningGlobalMessageEnabled,
+      warningGlobalMessageTemplate: row.warningGlobalMessageTemplate,
+      kickPrivateMessageEnabled: row.kickPrivateMessageEnabled,
+      kickPrivateMessageTemplate: row.kickPrivateMessageTemplate,
+      kickGlobalMessageEnabled: row.kickGlobalMessageEnabled,
+      kickGlobalMessageTemplate: row.kickGlobalMessageTemplate,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
+    };
+  }
+
+  async updateMessageTemplates(data) {
+    const now = Date.now();
+    const result = await this.pool.query(`
+      UPDATE message_templates SET
+        "banPrivateMessageEnabled" = COALESCE($1, "banPrivateMessageEnabled"),
+        "banPrivateMessageTemplate" = COALESCE($2, "banPrivateMessageTemplate"),
+        "banGlobalMessageEnabled" = COALESCE($3, "banGlobalMessageEnabled"),
+        "banGlobalMessageTemplate" = COALESCE($4, "banGlobalMessageTemplate"),
+        "unbanMessageEnabled" = COALESCE($5, "unbanMessageEnabled"),
+        "unbanMessageTemplate" = COALESCE($6, "unbanMessageTemplate"),
+        "warningMessageEnabled" = COALESCE($7, "warningMessageEnabled"),
+        "warningMessageTemplate" = COALESCE($8, "warningMessageTemplate"),
+        "warningGlobalMessageEnabled" = COALESCE($9, "warningGlobalMessageEnabled"),
+        "warningGlobalMessageTemplate" = COALESCE($10, "warningGlobalMessageTemplate"),
+        "kickPrivateMessageEnabled" = COALESCE($11, "kickPrivateMessageEnabled"),
+        "kickPrivateMessageTemplate" = COALESCE($12, "kickPrivateMessageTemplate"),
+        "kickGlobalMessageEnabled" = COALESCE($13, "kickGlobalMessageEnabled"),
+        "kickGlobalMessageTemplate" = COALESCE($14, "kickGlobalMessageTemplate"),
+        "updatedAt" = $15
+      WHERE id = 'default'
+      RETURNING *
+    `, [
+      data.banPrivateMessageEnabled,
+      data.banPrivateMessageTemplate,
+      data.banGlobalMessageEnabled,
+      data.banGlobalMessageTemplate,
+      data.unbanMessageEnabled,
+      data.unbanMessageTemplate,
+      data.warningMessageEnabled,
+      data.warningMessageTemplate,
+      data.warningGlobalMessageEnabled,
+      data.warningGlobalMessageTemplate,
+      data.kickPrivateMessageEnabled,
+      data.kickPrivateMessageTemplate,
+      data.kickGlobalMessageEnabled,
+      data.kickGlobalMessageTemplate,
+      now
+    ]);
+    return this.getMessageTemplates();
+  }
+
+  // ============ AUTOMATED MESSAGES ============
+
+  async getAllAutomatedMessages() {
+    const result = await this.pool.query(`
+      SELECT * FROM automated_messages ORDER BY "createdAt" DESC
+    `);
+    return result.rows.map(row => ({
+      id: row.id,
+      message: row.message,
+      intervalMinutes: row.intervalMinutes,
+      isEnabled: row.isEnabled,
+      isGlobal: row.isGlobal,
+      serverId: row.serverId,
+      serverName: row.serverName,
+      lastSent: row.lastSent ? parseInt(row.lastSent) : null,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
+    }));
+  }
+
+  async getAutomatedMessagesByServer(serverId) {
+    const result = await this.pool.query(`
+      SELECT * FROM automated_messages
+      WHERE "serverId" = $1 OR "isGlobal" = true
+      ORDER BY "createdAt" DESC
+    `, [serverId]);
+    return result.rows.map(row => ({
+      id: row.id,
+      message: row.message,
+      intervalMinutes: row.intervalMinutes,
+      isEnabled: row.isEnabled,
+      isGlobal: row.isGlobal,
+      serverId: row.serverId,
+      serverName: row.serverName,
+      lastSent: row.lastSent ? parseInt(row.lastSent) : null,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
+    }));
+  }
+
+  async getDueAutomatedMessages() {
+    const now = Date.now();
+    // Get messages that are enabled and due to be sent
+    // A message is due if: lastSent is null OR (now - lastSent) >= intervalMinutes * 60 * 1000
+    const result = await this.pool.query(`
+      SELECT * FROM automated_messages
+      WHERE "isEnabled" = true
+      AND ("lastSent" IS NULL OR ($1 - "lastSent") >= ("intervalMinutes" * 60 * 1000))
+    `, [now]);
+    return result.rows.map(row => ({
+      id: row.id,
+      message: row.message,
+      intervalMinutes: row.intervalMinutes,
+      isEnabled: row.isEnabled,
+      isGlobal: row.isGlobal,
+      serverId: row.serverId,
+      serverName: row.serverName,
+      lastSent: row.lastSent ? parseInt(row.lastSent) : null,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
+    }));
+  }
+
+  async createAutomatedMessage(data) {
+    const now = Date.now();
+    const id = data.id || `msg_${now}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Smart spacing: Calculate initial lastSent based on existing messages with same interval
+    // This prevents all messages from firing at the same time
+    const existingResult = await this.pool.query(`
+      SELECT COUNT(*) as count FROM automated_messages
+      WHERE "intervalMinutes" = $1 AND "isEnabled" = true
+    `, [data.intervalMinutes || 5]);
+    const existingCount = parseInt(existingResult.rows[0].count);
+    const intervalMs = (data.intervalMinutes || 5) * 60 * 1000;
+
+    // Stagger: spread messages evenly across the interval
+    let initialLastSent = null;
+    if (existingCount > 0) {
+      const offsetMs = (intervalMs / (existingCount + 1)) * existingCount;
+      initialLastSent = now - intervalMs + offsetMs;
+    }
+
+    await this.pool.query(`
+      INSERT INTO automated_messages (id, message, "intervalMinutes", "isEnabled", "isGlobal", "serverId", "serverName", "lastSent", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `, [
+      id,
+      data.message,
+      data.intervalMinutes || 5,
+      data.isEnabled !== false,
+      data.isGlobal || false,
+      data.serverId || null,
+      data.serverName || null,
+      initialLastSent,
+      now
+    ]);
+
+    return { id, message: data.message, intervalMinutes: data.intervalMinutes || 5, isEnabled: data.isEnabled !== false, isGlobal: data.isGlobal || false, serverId: data.serverId, serverName: data.serverName, createdAt: now };
+  }
+
+  async updateAutomatedMessage(id, data) {
+    const now = Date.now();
+    const fields = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (data.message !== undefined) {
+      fields.push(`message = $${paramIndex++}`);
+      values.push(data.message);
+    }
+    if (data.intervalMinutes !== undefined) {
+      fields.push(`"intervalMinutes" = $${paramIndex++}`);
+      values.push(data.intervalMinutes);
+    }
+    if (data.isEnabled !== undefined) {
+      fields.push(`"isEnabled" = $${paramIndex++}`);
+      values.push(data.isEnabled);
+    }
+    if (data.isGlobal !== undefined) {
+      fields.push(`"isGlobal" = $${paramIndex++}`);
+      values.push(data.isGlobal);
+    }
+    if (data.serverId !== undefined) {
+      fields.push(`"serverId" = $${paramIndex++}`);
+      values.push(data.serverId);
+    }
+    if (data.serverName !== undefined) {
+      fields.push(`"serverName" = $${paramIndex++}`);
+      values.push(data.serverName);
+    }
+
+    fields.push(`"updatedAt" = $${paramIndex++}`);
+    values.push(now);
+
+    values.push(id);
+
+    const result = await this.pool.query(`
+      UPDATE automated_messages SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *
+    `, values);
+
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      message: row.message,
+      intervalMinutes: row.intervalMinutes,
+      isEnabled: row.isEnabled,
+      isGlobal: row.isGlobal,
+      serverId: row.serverId,
+      serverName: row.serverName,
+      lastSent: row.lastSent ? parseInt(row.lastSent) : null,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
+    };
+  }
+
+  async updateAutomatedMessageLastSent(id) {
+    const now = Date.now();
+    await this.pool.query(`
+      UPDATE automated_messages SET "lastSent" = $1 WHERE id = $2
+    `, [now, id]);
+  }
+
+  async deleteAutomatedMessage(id) {
+    const result = await this.pool.query(`DELETE FROM automated_messages WHERE id = $1 RETURNING id`, [id]);
+    return result.rows.length > 0;
   }
 
   async close() {
