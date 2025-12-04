@@ -416,15 +416,15 @@ export class PostgresDatabaseManager {
           id TEXT PRIMARY KEY,
           "userId" TEXT NOT NULL,
           "userEmail" TEXT,
-          "userName" TEXT,
-          "playerGuid" TEXT,
-          "playerName" TEXT,
+          "reporterGuid" TEXT,
+          "reporterName" TEXT,
+          "issueType" TEXT NOT NULL,
           subject TEXT NOT NULL,
           description TEXT NOT NULL,
           status TEXT DEFAULT 'open',
-          "adminResponse" TEXT,
-          "respondedBy" TEXT,
-          "respondedAt" BIGINT,
+          resolution TEXT,
+          "resolvedBy" TEXT,
+          "resolvedAt" BIGINT,
           "createdAt" BIGINT NOT NULL,
           "updatedAt" BIGINT
         )
@@ -2309,15 +2309,15 @@ export class PostgresDatabaseManager {
     const now = Date.now();
 
     await this.pool.query(`
-      INSERT INTO support_tickets (id, "userId", "userEmail", "userName", "playerGuid", "playerName", subject, description, status, "createdAt", "updatedAt")
+      INSERT INTO support_tickets (id, "userId", "userEmail", "reporterGuid", "reporterName", "issueType", subject, description, status, "createdAt", "updatedAt")
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', $9, $9)
     `, [
       id,
       ticket.userId,
       ticket.userEmail || null,
-      ticket.userName || null,
-      ticket.playerGuid || null,
-      ticket.playerName || null,
+      ticket.reporterGuid || null,
+      ticket.reporterName || null,
+      ticket.issueType,
       ticket.subject,
       ticket.description,
       now
@@ -2364,14 +2364,14 @@ export class PostgresDatabaseManager {
       fields.push(`status = $${paramIndex++}`);
       values.push(data.status);
     }
-    if (data.adminResponse !== undefined) {
-      fields.push(`"adminResponse" = $${paramIndex++}`);
-      values.push(data.adminResponse);
+    if (data.resolution !== undefined) {
+      fields.push(`resolution = $${paramIndex++}`);
+      values.push(data.resolution);
     }
-    if (data.respondedBy !== undefined) {
-      fields.push(`"respondedBy" = $${paramIndex++}`);
-      values.push(data.respondedBy);
-      fields.push(`"respondedAt" = $${paramIndex++}`);
+    if (data.resolvedBy !== undefined) {
+      fields.push(`"resolvedBy" = $${paramIndex++}`);
+      values.push(data.resolvedBy);
+      fields.push(`"resolvedAt" = $${paramIndex++}`);
       values.push(now);
     }
 
@@ -2398,15 +2398,15 @@ export class PostgresDatabaseManager {
       id: row.id,
       userId: row.userId,
       userEmail: row.userEmail,
-      userName: row.userName,
-      playerGuid: row.playerGuid,
-      playerName: row.playerName,
+      reporterGuid: row.reporterGuid,
+      reporterName: row.reporterName,
+      issueType: row.issueType,
       subject: row.subject,
       description: row.description,
       status: row.status,
-      adminResponse: row.adminResponse,
-      respondedBy: row.respondedBy,
-      respondedAt: row.respondedAt ? parseInt(row.respondedAt) : null,
+      resolution: row.resolution,
+      resolvedBy: row.resolvedBy,
+      resolvedAt: row.resolvedAt ? parseInt(row.resolvedAt) : null,
       createdAt: row.createdAt ? parseInt(row.createdAt) : null,
       updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
     };

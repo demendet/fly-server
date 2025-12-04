@@ -1684,24 +1684,43 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
         await new Promise(resolve => setTimeout(resolve, 200));
 
         // 3. Ban player on all servers until they acknowledge
+        // Use full-ban endpoint which handles: add to blacklist, kick, !blacklist update
         const banReason = `Warning: ${warningReason} - You must acknowledge this warning on your profile at mxb-mods.com to be unbanned`;
         for (const source of sources) {
           try {
             const serversResp = await fetchFromManager(source, '/servers');
             const servers = Array.isArray(serversResp) ? serversResp : [];
-            for (const server of servers) {
-              const serverId = server.id || server.Id;
+            if (servers.length > 0) {
+              const firstServer = servers[0];
+              const serverId = firstServer.id || firstServer.Id;
               try {
-                await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
-                  playerGuid: upperGuid,
-                  playerName: report.offenderName,
-                  reason: banReason,
-                  duration: 0,
-                  isPermanent: true,
-                  sendPrivateMessage: false,
-                  sendGlobalMessage: false
+                // Use full-ban endpoint (handles blacklist + kick + !blacklist update)
+                // Disable ban messages since we already sent warning messages
+                await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
+                  PlayerGuid: upperGuid,
+                  PlayerName: report.offenderName,
+                  Reason: banReason,
+                  Duration: 0,
+                  DurationType: 5, // Permanent (BanDurationType.Permanent)
+                  IsGlobal: true,
+                  SendPrivateMessage: false,
+                  SendGlobalMessage: false
                 });
-              } catch (banErr) { }
+                console.log(`[REPORTS] Warning ban succeeded via full-ban on ${source.id}`);
+              } catch (fullBanErr) {
+                console.log(`[REPORTS] full-ban failed on ${source.id}: ${fullBanErr.message}, trying regular ban`);
+                // Fallback to regular ban
+                try {
+                  await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+                    playerGuid: upperGuid,
+                    playerName: report.offenderName,
+                    reason: banReason,
+                    duration: 0,
+                    isPermanent: true,
+                    isGlobal: true
+                  });
+                } catch (banErr) { }
+              }
             }
           } catch (sourceErr) { }
         }
@@ -2204,20 +2223,20 @@ app.get('/api/admin/support-tickets', requireAuth, requireModerator, async (req,
 app.put('/api/admin/support-tickets/:id', requireAuth, requireModerator, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, adminResponse } = req.body;
-    const respondedBy = req.userProfile?.displayName || req.user?.email;
+    const { status, resolution } = req.body;
+    const resolvedBy = req.userProfile?.displayName || req.user?.email;
 
     const ticket = await db.updateSupportTicket(id, {
       status,
-      adminResponse,
-      respondedBy
+      resolution,
+      resolvedBy
     });
 
     if (!ticket) {
       return res.status(404).json({ error: 'Support ticket not found' });
     }
 
-    console.log(`[SUPPORT_TICKETS] Updated ${id} by ${respondedBy}`);
+    console.log(`[SUPPORT_TICKETS] Updated ${id} by ${resolvedBy}`);
     res.json(ticket);
   } catch (err) {
     console.error('[SUPPORT_TICKETS] Error updating:', err.message);
@@ -2246,24 +2265,25 @@ app.delete('/api/admin/support-tickets/:id', requireAuth, requireAdmin, async (r
 // Create support ticket (user)
 app.post('/api/support-tickets', requireAuth, async (req, res) => {
   try {
-    const { subject, description, playerGuid, playerName } = req.body;
+    const { subject, description, issueType, reporterGuid, reporterName } = req.body;
 
-    if (!subject || !description) {
-      return res.status(400).json({ error: 'Subject and description are required' });
+    if (!subject || !description || !issueType) {
+      return res.status(400).json({ error: 'Subject, description, and issue type are required' });
     }
 
     const ticket = await db.createSupportTicket({
       userId: req.userId,
       userEmail: req.user?.email,
-      userName: req.userProfile?.displayName || req.user?.name,
-      playerGuid,
-      playerName,
+      reporterGuid,
+      reporterName,
+      issueType,
       subject,
       description
     });
 
     console.log(`[SUPPORT_TICKETS] Created by ${req.userProfile?.displayName || req.user?.email}: "${subject}"`);
-    res.json(ticket);
+    // Return wrapped in { ticket: ... } as frontend expects
+    res.json({ ticket });
   } catch (err) {
     console.error('[SUPPORT_TICKETS] Error creating:', err.message);
     res.status(500).json({ error: err.message });
