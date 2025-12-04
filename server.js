@@ -2959,9 +2959,11 @@ app.post('/api/admin/servers/:serverId/restart', requireAuth, requireAdmin, asyn
 app.post('/api/admin/servers/:serverId/message', requireAuth, requireModerator, async (req, res) => {
   try {
     const { serverId } = req.params;
-    const { message } = req.body;
-    const result = await proxyToManager(`/servers/${serverId}/message`, 'POST', { message });
-    console.log(`[ADMIN] Sent message to server ${serverId}: ${message}`);
+    const { message, targetGuid } = req.body;
+    // Pass targetGuid if provided for private messages, otherwise public message
+    const payload = targetGuid ? { message, targetGuid } : { message };
+    const result = await proxyToManager(`/servers/${serverId}/message`, 'POST', payload);
+    console.log(`[ADMIN] Sent ${targetGuid ? 'private' : 'public'} message to server ${serverId}: ${message}`);
     res.json(result);
   } catch (err) {
     console.error('[ADMIN] Send message error:', err.message);
