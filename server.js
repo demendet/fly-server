@@ -2386,9 +2386,9 @@ app.post('/api/player/:guid/warnings/:warningId/acknowledge', requireAuth, async
 
     const userData = userDoc.data();
 
-    // Check if this GUID is linked to the user
-    const linkedPlayer = userData.linkedPlayers?.find(p => p.guid.toUpperCase() === upperGuid);
-    if (!linkedPlayer) {
+    // Check if this GUID is linked to the user (Firestore uses linkedPlayerGuid as a single GUID string)
+    const userLinkedGuid = userData.linkedPlayerGuid?.toUpperCase();
+    if (!userLinkedGuid || userLinkedGuid !== upperGuid) {
       return res.status(403).json({ error: 'This player is not linked to your account' });
     }
 
