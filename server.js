@@ -363,6 +363,9 @@ app.use('/api/', (req, res, next) => {
   if (req.path === '/analytics/track') return next();
   // CBR overlay plugin - player lookup by GUID
   if (req.path.match(/^\/player\/[A-Za-z0-9]+$/) && req.method === 'GET') return next();
+  // Public endpoints for Netlify edge function (Discord/Twitter meta tags)
+  if (req.path === '/leaderboards' && req.method === 'GET') return next();
+  if (req.path.match(/^\/session\/[A-Za-z0-9_-]+$/) && req.method === 'GET') return next();
 
   const origin = req.headers.origin || '';
   const referer = req.headers.referer || req.headers.referrer || '';
@@ -714,23 +717,30 @@ app.post('/api/admin/cleanup-rotation-servers', async (req, res) => {
   }
 });
 
-// Simple player lookup by GUID - used by CBR overlay plugin
+// Simple player lookup by GUID - used by CBR overlay plugin and Discord meta tags
 app.get('/api/player/:guid', async (req, res) => {
   try {
     const { guid } = req.params;
-    const player = await db.getPlayer(guid.toUpperCase());
-    if (!player) {
+    // Use simple query to get stored values (faster, matches what profile page shows)
+    const result = await db.pool.query(
+      'SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "steamAvatarUrl" FROM players WHERE guid = $1',
+      [guid.toUpperCase()]
+    );
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Player not found' });
     }
+    const row = result.rows[0];
     // Return basic info for overlay
     res.json({
-      guid: player.guid,
-      displayName: player.displayName,
-      mmr: player.mmr || 1000,
-      safetyRating: player.safetyRating || 0.5,
-      totalRaces: player.totalRaces || 0,
-      wins: player.wins || 0,
-      podiums: player.podiums || 0
+      guid: row.guid,
+      displayName: row.displayName,
+      mmr: row.mmr || 1000,
+      safetyRating: row.safetyRating || 0.5,
+      totalRaces: row.totalRaces || 0,
+      wins: row.wins || 0,
+      podiums: row.podiums || 0,
+      holeshots: row.holeshots || 0,
+      profileImageUrl: row.steamAvatarUrl || null
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
