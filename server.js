@@ -2653,108 +2653,111 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
         .slice(0, 99);
     };
 
-    // First, send the warning message to the player in-game (before banning/kicking)
-    console.log(`[ADMIN] Sending warning message to ${playerName} (${upperGuid})...`);
-
     const sources = getApiSources();
     const messageResults = [];
+    const banResults = [];
 
-    // Send warning messages manually using our templates
+    // Collect ALL servers from ALL managers
+    const allServers = [];
     for (const source of sources) {
       try {
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
-        if (servers.length > 0) {
-          const firstServer = servers[0];
-          const serverId = firstServer.id || firstServer.Id;
-
-          // Send private warning message if enabled
-          if (templates.warningMessageEnabled && templates.warningMessageTemplate) {
-            try {
-              const privateMsg = formatMessage(templates.warningMessageTemplate);
-              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
-                message: privateMsg,
-                targetGuid: upperGuid
-              });
-              console.log(`[ADMIN] Sent warning private message to ${playerName}`);
-            } catch (msgErr) {
-              console.log(`[ADMIN] Warning private message failed (player may be offline): ${msgErr.message}`);
-            }
-          }
-
-          // Send global warning message if enabled
-          if (templates.warningGlobalMessageEnabled && templates.warningGlobalMessageTemplate) {
-            try {
-              const globalMsg = formatMessage(templates.warningGlobalMessageTemplate);
-              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
-                message: globalMsg
-              });
-              console.log(`[ADMIN] Sent warning global message on ${source.id}`);
-              messageResults.push({ source: source.id, success: true });
-            } catch (msgErr) {
-              console.log(`[ADMIN] Warning global message failed: ${msgErr.message}`);
-              messageResults.push({ source: source.id, success: false, error: msgErr.message });
-            }
-          }
+        for (const server of servers) {
+          allServers.push({
+            source,
+            serverId: server.id || server.Id,
+            serverName: server.name || server.Name
+          });
         }
-      } catch (msgErr) {
-        messageResults.push({ source: source.id, success: false, error: msgErr.message });
+      } catch (err) {
+        console.log(`[ADMIN] Failed to get servers from ${source.id}: ${err.message}`);
+      }
+    }
+
+    console.log(`[ADMIN] Warning: Found ${allServers.length} servers across ${sources.length} managers`);
+
+    // Send warning messages to ALL servers
+    const privateMsg = templates.warningMessageEnabled && templates.warningMessageTemplate
+      ? formatMessage(templates.warningMessageTemplate)
+      : null;
+    const globalMsg = templates.warningGlobalMessageEnabled && templates.warningGlobalMessageTemplate
+      ? formatMessage(templates.warningGlobalMessageTemplate)
+      : null;
+
+    for (const serverInfo of allServers) {
+      const { source, serverId, serverName } = serverInfo;
+
+      // Send private warning message to player (they might be on any server)
+      if (privateMsg) {
+        try {
+          await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+            message: privateMsg,
+            targetGuid: upperGuid
+          });
+          console.log(`[ADMIN] Sent warning private message on ${serverName}`);
+        } catch (msgErr) {
+          // Player might not be on this server, that's ok
+        }
+      }
+
+      // Send global warning message to ALL servers
+      if (globalMsg) {
+        try {
+          await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+            message: globalMsg
+          });
+          console.log(`[ADMIN] Sent warning global message on ${serverName}`);
+          messageResults.push({ source: source.id, serverName, success: true });
+        } catch (msgErr) {
+          console.log(`[ADMIN] Warning global message failed on ${serverName}: ${msgErr.message}`);
+        }
       }
     }
 
     // Small delay to ensure message is delivered before kick
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    // Ban the player on all servers until they acknowledge the warning
-    // Use full-ban endpoint which handles: add to blacklist, kick, !blacklist update
+    // Ban the player - call full-ban ONCE per manager (handles kick + blacklist + !blacklist update)
     console.log(`[ADMIN] Warning issued to ${playerName} (${upperGuid}) - banning until acknowledged...`);
 
-    const banResults = [];
     const banReason = `Warning: ${reason} - You must acknowledge this warning on your profile at cbrservers.com to be unbanned`;
 
     for (const source of sources) {
-      try {
-        const serversResp = await fetchFromManager(source, '/servers');
-        const servers = Array.isArray(serversResp) ? serversResp : [];
+      // Find first server on this manager
+      const serverInfo = allServers.find(s => s.source.id === source.id);
+      if (!serverInfo) continue;
 
-        if (servers.length > 0) {
-          const firstServer = servers[0];
-          const serverId = firstServer.id || firstServer.Id;
-          try {
-            // Use full-ban endpoint (handles blacklist + kick + !blacklist update)
-            // Disable ban messages since we already sent warning messages
-            await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
-              PlayerGuid: upperGuid,
-              PlayerName: playerName || 'Unknown',
-              Reason: banReason,
-              Duration: 0,
-              DurationType: 5, // Permanent (BanDurationType.Permanent)
-              IsGlobal: true,
-              SendPrivateMessage: false, // Don't send ban message, we already sent warning message
-              SendGlobalMessage: false   // Don't broadcast ban, warning was already broadcast
-            });
-            banResults.push({ source: source.id, success: true, endpoint: 'full-ban' });
-            console.log(`[ADMIN] Warning ban succeeded via full-ban on ${source.id}`);
-          } catch (fullBanErr) {
-            console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying regular ban`);
-            // Fallback to regular ban (won't kick or update blacklist, but at least creates record)
-            try {
-              await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
-                playerGuid: upperGuid,
-                playerName: playerName || 'Unknown',
-                reason: banReason,
-                duration: 0,
-                isPermanent: true,
-                isGlobal: true
-              });
-              banResults.push({ source: source.id, success: true, endpoint: 'ban' });
-            } catch (banErr) {
-              banResults.push({ source: source.id, success: false, error: banErr.message });
-            }
-          }
+      const { serverId, serverName } = serverInfo;
+      try {
+        // Use full-ban endpoint (handles blacklist + kick + !blacklist update)
+        await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
+          PlayerGuid: upperGuid,
+          PlayerName: playerName || 'Unknown',
+          Reason: banReason,
+          Duration: 0,
+          DurationType: 5, // Permanent (BanDurationType.Permanent)
+          IsGlobal: true,
+          SendPrivateMessage: false, // Don't send ban message, we already sent warning message
+          SendGlobalMessage: false   // Don't broadcast ban, warning was already broadcast
+        });
+        banResults.push({ source: source.id, serverName, success: true, endpoint: 'full-ban' });
+        console.log(`[ADMIN] Warning ban succeeded via full-ban on ${source.id} (${serverName})`);
+      } catch (fullBanErr) {
+        console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying regular ban`);
+        try {
+          await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+            playerGuid: upperGuid,
+            playerName: playerName || 'Unknown',
+            reason: banReason,
+            duration: 0,
+            isPermanent: true,
+            isGlobal: true
+          });
+          banResults.push({ source: source.id, serverName, success: true, endpoint: 'ban' });
+        } catch (banErr) {
+          banResults.push({ source: source.id, serverName, success: false, error: banErr.message });
         }
-      } catch (sourceErr) {
-        console.error(`[ADMIN] Error banning from source ${source.name}:`, sourceErr.message);
       }
     }
 
@@ -3626,12 +3629,13 @@ app.post('/api/admin/servers/:serverId/kick', requireAuth, requireModerator, asy
     // Small delay to ensure messages are delivered before kick
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    // Perform the kick (manager's kick endpoint will also try to send messages,
-    // but we've already sent ours from our templates)
+    // Perform the kick with messages disabled (we already sent them from our templates)
     const result = await proxyToManager(`/servers/${serverId}/kick`, 'POST', {
       playerGuid,
       playerName,
-      reason
+      reason,
+      SendPrivateMessage: false,
+      SendGlobalMessage: false
     });
     console.log(`[ADMIN] Kicked player ${playerName || playerGuid} from server ${serverId}${reason ? ` - Reason: ${reason}` : ''}`);
     res.json(result);
