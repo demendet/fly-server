@@ -340,6 +340,147 @@ app.use(cors({
 
 app.use(express.json());
 
+// =============================================================================
+// SOCIAL MEDIA BOT DETECTION - Returns proper meta tags for Discord/Twitter/etc
+// =============================================================================
+const BOT_USER_AGENTS = [
+  'Discordbot',
+  'Twitterbot',
+  'facebookexternalhit',
+  'LinkedInBot',
+  'Slackbot',
+  'TelegramBot',
+  'WhatsApp',
+  'Googlebot',
+  'bingbot'
+];
+
+function isSocialBot(userAgent) {
+  if (!userAgent) return false;
+  return BOT_USER_AGENTS.some(bot => userAgent.toLowerCase().includes(bot.toLowerCase()));
+}
+
+function generateMetaHTML({ title, description, url, image }) {
+  const fullTitle = title ? `${title} | CBR Servers` : 'CBR Servers - MX Bikes Servers, Leaderboards, Stats & Live Timing';
+  const defaultImage = 'https://cbrservers.com/cbr-logo.png';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${fullTitle}</title>
+  <meta name="description" content="${description}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="${url}">
+  <meta property="og:title" content="${fullTitle}">
+  <meta property="og:description" content="${description}">
+  <meta property="og:image" content="${image || defaultImage}">
+  <meta property="og:site_name" content="CBR Servers">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="${fullTitle}">
+  <meta name="twitter:description" content="${description}">
+  <meta name="twitter:image" content="${image || defaultImage}">
+  <meta http-equiv="refresh" content="0;url=${url}">
+</head>
+<body>
+  <p>Redirecting to <a href="${url}">${fullTitle}</a>...</p>
+</body>
+</html>`;
+}
+
+// Static page meta data
+const PAGE_META = {
+  '/': { title: 'Dashboard', description: 'Overview of CBR MX Bikes servers. See active servers, online players, top MMR rankings and quick stats.' },
+  '/live': { title: 'Live Timing', description: 'Watch MX Bikes races live. Real time lap times, positions and race standings on CBR servers.' },
+  '/sessions': { title: 'Recent Sessions', description: 'Browse past MX Bikes race sessions on CBR servers. View warmup and race results, lap times and standings.' },
+  '/leaderboards': { title: 'Leaderboards', description: 'MX Bikes player rankings on CBR servers. View MMR standings, safety ratings and weekly and monthly leaderboards.' },
+  '/records': { title: 'Track Records', description: 'Fastest lap times on every track. View MX Bikes track records by bike class on CBR servers.' },
+  '/players': { title: 'Players', description: 'Search MX Bikes players on CBR servers. View player profiles, stats, MMR, race history and more.' },
+  '/servers': { title: 'Servers', description: 'Browse and join CBR MX Bikes servers. See which servers are online, current tracks and player counts.' },
+  '/announcements': { title: 'Announcements', description: 'Latest news and updates from CBR Servers. Stay up to date with server changes, events and community announcements.' },
+  '/rules': { title: 'Rules', description: 'CBR Server rules and guidelines. Read the server and website rules before playing on CBR MX Bikes servers.' },
+  '/report': { title: 'Report Player', description: 'Report rule breakers on CBR MX Bikes servers. Submit evidence and track your reports.' },
+  '/ban-appeal': { title: 'Ban Appeal', description: 'Appeal your ban on CBR MX Bikes servers. Submit your appeal and track its status.' },
+  '/other-issues': { title: 'Other Issues', description: 'Report website bugs, account issues or other problems with CBR Servers.' }
+};
+
+// Social bot middleware - must be before other routes
+app.get('*', async (req, res, next) => {
+  const userAgent = req.headers['user-agent'] || '';
+
+  // Only intercept for social media bots
+  if (!isSocialBot(userAgent)) {
+    return next();
+  }
+
+  // Skip API routes
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
+
+  const baseUrl = 'https://cbrservers.com';
+  const url = `${baseUrl}${req.path}`;
+
+  try {
+    // Dynamic player profile pages
+    const playerMatch = req.path.match(/^\/player\/([A-Za-z0-9]+)$/);
+    if (playerMatch) {
+      const guid = playerMatch[1].toUpperCase();
+      const player = await db.getPlayer(guid);
+
+      if (player) {
+        const html = generateMetaHTML({
+          title: player.displayName,
+          description: `${player.displayName} on CBR Servers. MMR: ${Math.round(player.mmr || 1000)} | Races: ${player.totalRaces || 0} | Wins: ${player.wins || 0}`,
+          url,
+          image: player.profileImageUrl || null
+        });
+        return res.send(html);
+      }
+    }
+
+    // Dynamic session result pages
+    const sessionMatch = req.path.match(/^\/session\/([A-Za-z0-9_-]+)$/);
+    if (sessionMatch) {
+      const sessionId = sessionMatch[1];
+      const session = await db.getSession(sessionId);
+
+      if (session) {
+        const riderCount = session.raceResults?.length || session.warmupResults?.length || 0;
+        const html = generateMetaHTML({
+          title: `${session.trackName || 'Race'} Results`,
+          description: `Race results from ${session.trackName || 'Unknown Track'} on ${session.serverName || 'CBR Server'}. ${riderCount} riders competed.`,
+          url
+        });
+        return res.send(html);
+      }
+    }
+
+    // Static pages
+    const pageMeta = PAGE_META[req.path];
+    if (pageMeta) {
+      const html = generateMetaHTML({
+        title: pageMeta.title,
+        description: pageMeta.description,
+        url
+      });
+      return res.send(html);
+    }
+
+    // Default fallback
+    const html = generateMetaHTML({
+      title: null,
+      description: 'MX Bikes servers with leaderboards, player stats, track records, live timing and race results. Join CBR servers and compete with the community.',
+      url
+    });
+    return res.send(html);
+
+  } catch (err) {
+    console.error('[BOT-META] Error generating meta:', err.message);
+    return next();
+  }
+});
+
 // Rate limiting - 500 requests per minute per IP (high limit for normal use)
 const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW = 60000; // 1 minute
@@ -2997,86 +3138,108 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
         .slice(0, 99); // Enforce 99 char limit
     };
 
-    // Send messages before banning (so player can receive them)
-    let messageSent = false;
+    // Collect ALL servers from ALL managers for global ban messaging
+    const allServers = [];
     for (const source of sources) {
       try {
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
-        if (servers.length > 0) {
-          const firstServer = servers[0];
-          const serverId = firstServer.id || firstServer.Id;
-
-          // Send private message to player if enabled
-          if (templates.banPrivateMessageEnabled && templates.banPrivateMessageTemplate && !messageSent) {
-            try {
-              const privateMsg = formatMessage(templates.banPrivateMessageTemplate);
-              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
-                message: privateMsg,
-                targetGuid: banData.playerGuid
-              });
-              console.log(`[ADMIN] Sent ban private message to ${banData.playerName}`);
-            } catch (msgErr) {
-              // Player might not be online, that's ok
-              console.log(`[ADMIN] Private ban message not sent (player may be offline): ${msgErr.message}`);
-            }
-          }
-
-          // Send global message if enabled
-          if (templates.banGlobalMessageEnabled && templates.banGlobalMessageTemplate && !messageSent) {
-            try {
-              const globalMsg = formatMessage(templates.banGlobalMessageTemplate);
-              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
-                message: globalMsg
-              });
-              console.log(`[ADMIN] Sent ban global message on ${source.id}`);
-              messageSent = true; // Only send global message once
-            } catch (msgErr) {
-              console.log(`[ADMIN] Global ban message failed: ${msgErr.message}`);
-            }
-          }
+        for (const server of servers) {
+          allServers.push({
+            source,
+            serverId: server.id || server.Id,
+            serverName: server.name || server.Name
+          });
         }
       } catch (err) {
-        // Continue to ban even if messages fail
+        console.log(`[ADMIN] Failed to get servers from ${source.id}: ${err.message}`);
       }
     }
 
-    // Now perform the ban with messages disabled (we already sent them)
-    for (const source of sources) {
+    console.log(`[ADMIN] Global ban: Found ${allServers.length} servers across ${sources.length} managers`);
+
+    // Send messages to ALL servers before banning (so player can receive them)
+    // For global ban, we want everyone on all servers to see the message
+    const privateMsg = templates.banPrivateMessageEnabled && templates.banPrivateMessageTemplate
+      ? formatMessage(templates.banPrivateMessageTemplate)
+      : null;
+    const globalMsg = templates.banGlobalMessageEnabled && templates.banGlobalMessageTemplate
+      ? formatMessage(templates.banGlobalMessageTemplate)
+      : null;
+
+    for (const serverInfo of allServers) {
+      const { source, serverId, serverName } = serverInfo;
+
+      // Send private message to player on this server (they might be on any server)
+      if (privateMsg) {
+        try {
+          await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+            message: privateMsg,
+            targetGuid: banData.playerGuid
+          });
+          console.log(`[ADMIN] Sent ban private message on ${serverName}`);
+        } catch (msgErr) {
+          // Player might not be on this server, that's ok
+        }
+      }
+
+      // Send global (public) message to ALL servers so everyone sees the ban
+      if (globalMsg) {
+        try {
+          await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+            message: globalMsg
+          });
+          console.log(`[ADMIN] Sent ban global message on ${serverName}`);
+        } catch (msgErr) {
+          console.log(`[ADMIN] Global ban message failed on ${serverName}: ${msgErr.message}`);
+        }
+      }
+    }
+
+    // Now perform the ban on ALL servers (so player gets kicked from whichever server they're on)
+    // The full-ban with isGlobal:true will update blacklist on all servers, but kick only happens on the server we call
+    // So we need to call it on all servers to ensure the player gets kicked
+    let banSucceeded = false;
+    for (const serverInfo of allServers) {
+      const { source, serverId, serverName } = serverInfo;
       try {
-        const serversResp = await fetchFromManager(source, '/servers');
-        const servers = Array.isArray(serversResp) ? serversResp : [];
-        if (servers.length > 0) {
-          const firstServer = servers[0];
-          const serverId = firstServer.id || firstServer.Id;
-          let result;
-          let usedEndpoint = 'full-ban';
-          try {
-            result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
-              ...banData,
-              isGlobal,
-              bannedBy: adminName,
-              SendPrivateMessage: false, // We already sent messages
-              SendGlobalMessage: false   // We already sent messages
-            });
-            console.log(`[ADMIN] Ban succeeded via full-ban on ${source.id} by ${adminName} (global: ${isGlobal})`);
-          } catch (fullBanErr) {
-            console.log(`[ADMIN] full-ban failed on ${source.id}: ${fullBanErr.message}, trying ban endpoint`);
-            usedEndpoint = 'ban';
-            result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
-              ...banData,
-              isGlobal
-            });
-            console.log(`[ADMIN] Ban succeeded via ban on ${source.id} (global: ${isGlobal})`);
-          }
-          results.push({ source: source.id, result, endpoint: usedEndpoint });
-        } else {
-          console.log(`[ADMIN] No servers found on ${source.id}`);
+        let result;
+        let usedEndpoint = 'full-ban';
+        try {
+          result = await fetchFromManager(source, `/servers/${serverId}/full-ban`, 'POST', {
+            ...banData,
+            isGlobal,
+            bannedBy: adminName,
+            SendPrivateMessage: false, // We already sent messages
+            SendGlobalMessage: false   // We already sent messages
+          });
+          console.log(`[ADMIN] Ban succeeded via full-ban on ${serverName} (${source.id})`);
+          banSucceeded = true;
+        } catch (fullBanErr) {
+          console.log(`[ADMIN] full-ban failed on ${serverName}: ${fullBanErr.message}, trying ban endpoint`);
+          usedEndpoint = 'ban';
+          result = await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+            ...banData,
+            isGlobal
+          });
+          console.log(`[ADMIN] Ban succeeded via ban on ${serverName} (${source.id})`);
+          banSucceeded = true;
+        }
+        // Only add to results once per manager (first successful server)
+        if (!results.find(r => r.source === source.id)) {
+          results.push({ source: source.id, serverName, result, endpoint: usedEndpoint });
         }
       } catch (err) {
-        console.error(`[ADMIN] Ban failed on ${source.id}: ${err.message}`);
-        errors.push({ source: source.id, error: err.message });
+        // Don't log as error - player just isn't on this server
+        console.log(`[ADMIN] Ban/kick on ${serverName}: ${err.message}`);
       }
+    }
+
+    if (allServers.length === 0) {
+      console.log(`[ADMIN] No servers found on any manager`);
+      errors.push({ source: 'all', error: 'No servers found' });
+    } else if (!banSucceeded) {
+      errors.push({ source: 'all', error: 'Ban failed on all servers' });
     }
 
     // Store ban history
