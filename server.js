@@ -1686,7 +1686,7 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
 
         // 3. Ban player on all servers until they acknowledge
         // Use full-ban endpoint which handles: add to blacklist, kick, !blacklist update
-        const banReason = `Warning: ${warningReason} - You must acknowledge this warning on your profile at mxb-mods.com to be unbanned`;
+        const banReason = `Warning: ${warningReason} - You must acknowledge this warning on your profile at cbrservers.com to be unbanned`;
         for (const source of sources) {
           try {
             const serversResp = await fetchFromManager(source, '/servers');
@@ -2632,7 +2632,7 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
     console.log(`[ADMIN] Warning issued to ${playerName} (${upperGuid}) - banning until acknowledged...`);
 
     const banResults = [];
-    const banReason = `Warning: ${reason} - You must acknowledge this warning on your profile at mxb-mods.com to be unbanned`;
+    const banReason = `Warning: ${reason} - You must acknowledge this warning on your profile at cbrservers.com to be unbanned`;
 
     for (const source of sources) {
       try {
