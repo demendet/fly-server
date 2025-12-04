@@ -2293,6 +2293,83 @@ app.get('/api/player/:guid/warnings', async (req, res) => {
   }
 });
 
+// Get unacknowledged warnings for a player
+app.get('/api/player/:guid/warnings/unacknowledged', async (req, res) => {
+  try {
+    const { guid } = req.params;
+    const warnings = await db.getUnacknowledgedWarnings(guid.toUpperCase());
+    res.json(warnings);
+  } catch (err) {
+    console.error('[WARNINGS] Error fetching unacknowledged warnings:', err.message);
+    res.status(500).json({ error: 'Failed to fetch unacknowledged warnings' });
+  }
+});
+
+// Acknowledge a warning - requires auth (player must be logged in)
+app.post('/api/player/:guid/warnings/:warningId/acknowledge', requireAuth, async (req, res) => {
+  try {
+    const { guid, warningId } = req.params;
+    const upperGuid = guid.toUpperCase();
+
+    // Verify the player owns this GUID (check their linked accounts)
+    const user = await db.getUser(req.user.uid);
+    if (!user) {
+      return res.status(403).json({ error: 'User not found' });
+    }
+
+    // Check if this GUID is linked to the user
+    const linkedPlayer = user.linkedPlayers?.find(p => p.guid.toUpperCase() === upperGuid);
+    if (!linkedPlayer) {
+      return res.status(403).json({ error: 'This player is not linked to your account' });
+    }
+
+    // Acknowledge the warning
+    const warning = await db.acknowledgeWarning(warningId, upperGuid);
+    if (!warning) {
+      return res.status(404).json({ error: 'Warning not found or already acknowledged' });
+    }
+
+    // Auto-unban the player from all sources
+    console.log(`[WARNINGS] Player ${upperGuid} acknowledged warning ${warningId}, auto-unbanning...`);
+
+    const sources = getApiSources();
+    const unbanResults = [];
+
+    for (const source of sources) {
+      try {
+        // Get servers from this manager
+        const serversResp = await fetchFromManager(source, '/servers');
+        const servers = Array.isArray(serversResp) ? serversResp : [];
+
+        for (const server of servers) {
+          const serverId = server.id || server.Id;
+          try {
+            await fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', {
+              playerGuid: upperGuid,
+              playerName: warning.playerName || 'Unknown'
+            });
+            unbanResults.push({ serverId, success: true });
+          } catch (unbanErr) {
+            // Might not be banned on this server, that's okay
+            unbanResults.push({ serverId, success: false, error: unbanErr.message });
+          }
+        }
+      } catch (sourceErr) {
+        console.error(`[WARNINGS] Error unbanning from source ${source.name}:`, sourceErr.message);
+      }
+    }
+
+    // Also clear the isBanned flag in our database
+    await db.updatePlayer(upperGuid, { isBanned: false, banReason: null, banExpiry: null });
+
+    console.log(`[WARNINGS] Player ${upperGuid} acknowledged warning and was auto-unbanned`);
+    res.json({ success: true, warning, unbanResults });
+  } catch (err) {
+    console.error('[WARNINGS] Error acknowledging warning:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============ ADMIN WARNINGS ============
 
 app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {

@@ -327,7 +327,9 @@ export class PostgresDatabaseManager {
           reason TEXT NOT NULL,
           "warnedBy" TEXT NOT NULL,
           "reportId" TEXT,
-          "createdAt" BIGINT NOT NULL
+          "createdAt" BIGINT NOT NULL,
+          acknowledged BOOLEAN DEFAULT FALSE,
+          "acknowledgedAt" BIGINT
         )
       `);
 
@@ -335,6 +337,14 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_player_warnings_player ON player_warnings("playerGuid");
         CREATE INDEX IF NOT EXISTS idx_player_warnings_created ON player_warnings("createdAt" DESC);
       `);
+
+      // Migration: Add acknowledged columns if they don't exist
+      try {
+        await client.query(`ALTER TABLE player_warnings ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN DEFAULT FALSE`);
+        await client.query(`ALTER TABLE player_warnings ADD COLUMN IF NOT EXISTS "acknowledgedAt" BIGINT`);
+      } catch (migrationErr) {
+        console.log('[POSTGRES] player_warnings migration:', migrationErr.message);
+      }
 
       // Announcements table
       await client.query(`
@@ -1555,6 +1565,35 @@ export class PostgresDatabaseManager {
       [warningId]
     );
     return result.rows.length > 0;
+  }
+
+  async acknowledgeWarning(warningId, playerGuid) {
+    const result = await this.pool.query(`
+      UPDATE player_warnings
+      SET acknowledged = TRUE, "acknowledgedAt" = $1
+      WHERE id = $2 AND "playerGuid" = $3 AND acknowledged = FALSE
+      RETURNING *
+    `, [Date.now(), warningId, playerGuid]);
+    return result.rows[0] || null;
+  }
+
+  async getUnacknowledgedWarnings(playerGuid) {
+    const result = await this.pool.query(`
+      SELECT * FROM player_warnings
+      WHERE "playerGuid" = $1 AND acknowledged = FALSE
+      ORDER BY "createdAt" DESC
+    `, [playerGuid]);
+    return result.rows;
+  }
+
+  async getRecentAcknowledgedWarnings(limit = 50) {
+    const result = await this.pool.query(`
+      SELECT * FROM player_warnings
+      WHERE acknowledged = TRUE
+      ORDER BY "acknowledgedAt" DESC
+      LIMIT $1
+    `, [limit]);
+    return result.rows;
   }
 
   // ============ BAN APPEALS ============
