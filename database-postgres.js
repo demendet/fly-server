@@ -339,6 +339,13 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_player_warnings_created ON player_warnings("createdAt" DESC);
       `);
 
+      // Migration: Add warnedByGuid column
+      try {
+        await client.query(`ALTER TABLE player_warnings ADD COLUMN IF NOT EXISTS "warnedByGuid" TEXT`);
+      } catch (migrationErr) {
+        console.log('[POSTGRES] warnedByGuid migration:', migrationErr.message);
+      }
+
       // Migration: Add acknowledged columns if they don't exist
       try {
         await client.query(`ALTER TABLE player_warnings ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN DEFAULT FALSE`);
@@ -443,6 +450,7 @@ export class PostgresDatabaseManager {
         await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "issueType" TEXT`);
         await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS resolution TEXT`);
         await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "resolvedBy" TEXT`);
+        await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "resolvedByGuid" TEXT`);
         await client.query(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS "resolvedAt" BIGINT`);
       } catch (migrationErr) {
         console.log('[POSTGRES] support_tickets migration:', migrationErr.message);
@@ -1596,14 +1604,15 @@ export class PostgresDatabaseManager {
   async createWarning(warning) {
     const id = `warning_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     await this.pool.query(`
-      INSERT INTO player_warnings (id, "playerGuid", "playerName", reason, "warnedBy", "reportId", "createdAt")
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO player_warnings (id, "playerGuid", "playerName", reason, "warnedBy", "warnedByGuid", "reportId", "createdAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `, [
       id,
       warning.playerGuid,
       warning.playerName,
       warning.reason,
       warning.warnedBy,
+      warning.warnedByGuid || null,
       warning.reportId || null,
       Date.now()
     ]);
@@ -2386,6 +2395,10 @@ export class PostgresDatabaseManager {
       fields.push(`"resolvedAt" = $${paramIndex++}`);
       values.push(now);
     }
+    if (data.resolvedByGuid !== undefined) {
+      fields.push(`"resolvedByGuid" = $${paramIndex++}`);
+      values.push(data.resolvedByGuid);
+    }
 
     fields.push(`"updatedAt" = $${paramIndex++}`);
     values.push(now);
@@ -2418,6 +2431,7 @@ export class PostgresDatabaseManager {
       status: row.status,
       resolution: row.resolution,
       resolvedBy: row.resolvedBy,
+      resolvedByGuid: row.resolvedByGuid,
       resolvedAt: row.resolvedAt ? parseInt(row.resolvedAt) : null,
       createdAt: row.createdAt ? parseInt(row.createdAt) : null,
       updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null

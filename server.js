@@ -1662,6 +1662,7 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
           playerName: report.offenderName,
           reason: warningReason,
           warnedBy: adminName,
+          warnedByGuid: adminGuid,
           reportId: report.id
         });
         console.log(`[ADMIN] Warning created for ${report.offenderName}: ${warningReason}`);
@@ -2225,11 +2226,13 @@ app.put('/api/admin/support-tickets/:id', requireAuth, requireModerator, async (
     const { id } = req.params;
     const { status, resolution } = req.body;
     const resolvedBy = req.userProfile?.displayName || req.user?.email;
+    const resolvedByGuid = req.userProfile?.linkedPlayerGuid || null;
 
     const ticket = await db.updateSupportTicket(id, {
       status,
       resolution,
-      resolvedBy
+      resolvedBy,
+      resolvedByGuid
     });
 
     if (!ticket) {
@@ -2587,7 +2590,8 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
     }
 
     const upperGuid = playerGuid.toUpperCase();
-    const adminName = req.user.displayName || req.user.email;
+    const adminName = req.userProfile?.displayName || req.user?.displayName || req.user?.email;
+    const adminGuid = req.userProfile?.linkedPlayerGuid || null;
 
     // Create the warning record
     const warning = await db.createWarning({
@@ -2595,6 +2599,7 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
       playerName: playerName || 'Unknown',
       reason,
       warnedBy: adminName,
+      warnedByGuid: adminGuid,
       reportId
     });
 
