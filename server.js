@@ -3507,6 +3507,114 @@ const LEADER_HEARTBEAT_INTERVAL = 5000;
 const LEADER_STALE_THRESHOLD = 15000;
 const LEADER_CHECK_INTERVAL = 3000;
 
+// ============================================================================
+// MESSAGE SETTINGS & AUTOMATED MESSAGES API
+// ============================================================================
+
+// Get message templates and settings
+app.get('/api/admin/settings/messages', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await proxyToManager('/settings/messages', 'GET');
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Get message settings error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update message templates and settings
+app.put('/api/admin/settings/messages', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const settings = req.body;
+    const result = await proxyToManager('/settings/messages', 'PUT', settings);
+    console.log(`[ADMIN] Updated message settings`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Update message settings error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get automated messages for a server
+app.get('/api/admin/servers/:serverId/automatedmessages', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/automatedmessages`, 'GET');
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Get automated messages error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add automated message to a server
+app.post('/api/admin/servers/:serverId/automatedmessages', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const messageData = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/automatedmessages`, 'POST', messageData);
+    console.log(`[ADMIN] Added automated message to server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Add automated message error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update automated message
+app.put('/api/admin/servers/:serverId/automatedmessages/:messageId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId, messageId } = req.params;
+    const messageData = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/automatedmessages/${messageId}`, 'PUT', messageData);
+    console.log(`[ADMIN] Updated automated message ${messageId} on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Update automated message error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete automated message
+app.delete('/api/admin/servers/:serverId/automatedmessages/:messageId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { serverId, messageId } = req.params;
+    const result = await proxyToManager(`/servers/${serverId}/automatedmessages/${messageId}`, 'DELETE');
+    console.log(`[ADMIN] Deleted automated message ${messageId} from server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Delete automated message error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Warn player on specific server
+app.post('/api/admin/servers/:serverId/warn', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    const warnData = req.body;
+    const result = await proxyToManager(`/servers/${serverId}/warn`, 'POST', warnData);
+    console.log(`[ADMIN] Warned player ${warnData.playerName || warnData.playerGuid} on server ${serverId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Warn player error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Warn player on all connected servers
+app.post('/api/admin/warn', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const warnData = req.body;
+    const result = await proxyToManager('/warn', 'POST', warnData);
+    console.log(`[ADMIN] Warned player ${warnData.playerName || warnData.playerGuid} on all servers`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Warn player (all servers) error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Discord Webhook for Server List - DISABLED
 // To re-enable: uncomment startDiscordServerListLoop() call in the leader election section
 /*
