@@ -410,6 +410,32 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_feature_requests_created ON feature_requests("createdAt" DESC);
       `);
 
+      // Support Tickets table (General Issues / Other)
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS support_tickets (
+          id TEXT PRIMARY KEY,
+          "userId" TEXT NOT NULL,
+          "userEmail" TEXT,
+          "userName" TEXT,
+          "playerGuid" TEXT,
+          "playerName" TEXT,
+          subject TEXT NOT NULL,
+          description TEXT NOT NULL,
+          status TEXT DEFAULT 'open',
+          "adminResponse" TEXT,
+          "respondedBy" TEXT,
+          "respondedAt" BIGINT,
+          "createdAt" BIGINT NOT NULL,
+          "updatedAt" BIGINT
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support_tickets("userId");
+        CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status);
+        CREATE INDEX IF NOT EXISTS idx_support_tickets_created ON support_tickets("createdAt" DESC);
+      `);
+
       console.log('[POSTGRES] All tables initialized successfully');
     } finally {
       client.release();
@@ -2271,6 +2297,116 @@ export class PostgresDatabaseManager {
       upvotes: upvotes,
       downvotes: downvotes,
       voteScore: upvotes.length - downvotes.length,
+      createdAt: row.createdAt ? parseInt(row.createdAt) : null,
+      updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
+    };
+  }
+
+  // ============ SUPPORT TICKETS ============
+
+  async createSupportTicket(ticket) {
+    const id = `ticket_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+
+    await this.pool.query(`
+      INSERT INTO support_tickets (id, "userId", "userEmail", "userName", "playerGuid", "playerName", subject, description, status, "createdAt", "updatedAt")
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', $9, $9)
+    `, [
+      id,
+      ticket.userId,
+      ticket.userEmail || null,
+      ticket.userName || null,
+      ticket.playerGuid || null,
+      ticket.playerName || null,
+      ticket.subject,
+      ticket.description,
+      now
+    ]);
+
+    return { id, ...ticket, status: 'open', createdAt: now, updatedAt: now };
+  }
+
+  async getAllSupportTickets(status = null) {
+    let query = 'SELECT * FROM support_tickets';
+    const params = [];
+
+    if (status) {
+      query += ' WHERE status = $1';
+      params.push(status);
+    }
+
+    query += ' ORDER BY "createdAt" DESC';
+
+    const result = await this.pool.query(query, params);
+    return result.rows.map(row => this.rowToSupportTicket(row));
+  }
+
+  async getSupportTicket(id) {
+    const result = await this.pool.query('SELECT * FROM support_tickets WHERE id = $1', [id]);
+    return this.rowToSupportTicket(result.rows[0]);
+  }
+
+  async getUserSupportTickets(userId) {
+    const result = await this.pool.query(
+      'SELECT * FROM support_tickets WHERE "userId" = $1 ORDER BY "createdAt" DESC',
+      [userId]
+    );
+    return result.rows.map(row => this.rowToSupportTicket(row));
+  }
+
+  async updateSupportTicket(id, data) {
+    const now = Date.now();
+    const fields = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (data.status !== undefined) {
+      fields.push(`status = $${paramIndex++}`);
+      values.push(data.status);
+    }
+    if (data.adminResponse !== undefined) {
+      fields.push(`"adminResponse" = $${paramIndex++}`);
+      values.push(data.adminResponse);
+    }
+    if (data.respondedBy !== undefined) {
+      fields.push(`"respondedBy" = $${paramIndex++}`);
+      values.push(data.respondedBy);
+      fields.push(`"respondedAt" = $${paramIndex++}`);
+      values.push(now);
+    }
+
+    fields.push(`"updatedAt" = $${paramIndex++}`);
+    values.push(now);
+    values.push(id);
+
+    const result = await this.pool.query(
+      `UPDATE support_tickets SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+      values
+    );
+
+    return this.rowToSupportTicket(result.rows[0]);
+  }
+
+  async deleteSupportTicket(id) {
+    const result = await this.pool.query('DELETE FROM support_tickets WHERE id = $1 RETURNING id', [id]);
+    return result.rows.length > 0;
+  }
+
+  rowToSupportTicket(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      userId: row.userId,
+      userEmail: row.userEmail,
+      userName: row.userName,
+      playerGuid: row.playerGuid,
+      playerName: row.playerName,
+      subject: row.subject,
+      description: row.description,
+      status: row.status,
+      adminResponse: row.adminResponse,
+      respondedBy: row.respondedBy,
+      respondedAt: row.respondedAt ? parseInt(row.respondedAt) : null,
       createdAt: row.createdAt ? parseInt(row.createdAt) : null,
       updatedAt: row.updatedAt ? parseInt(row.updatedAt) : null
     };

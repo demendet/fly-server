@@ -2186,6 +2186,101 @@ app.delete('/api/admin/feature-requests/:id', requireAuth, requireRoot, async (r
   }
 });
 
+// ============ SUPPORT TICKETS ============
+
+// Get all support tickets (admin)
+app.get('/api/admin/support-tickets', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const status = req.query.status || null;
+    const tickets = await db.getAllSupportTickets(status);
+    res.json(tickets);
+  } catch (err) {
+    console.error('[SUPPORT_TICKETS] Error fetching:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update support ticket (admin)
+app.put('/api/admin/support-tickets/:id', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, adminResponse } = req.body;
+    const respondedBy = req.userProfile?.displayName || req.user?.email;
+
+    const ticket = await db.updateSupportTicket(id, {
+      status,
+      adminResponse,
+      respondedBy
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ error: 'Support ticket not found' });
+    }
+
+    console.log(`[SUPPORT_TICKETS] Updated ${id} by ${respondedBy}`);
+    res.json(ticket);
+  } catch (err) {
+    console.error('[SUPPORT_TICKETS] Error updating:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete support ticket (admin)
+app.delete('/api/admin/support-tickets/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await db.deleteSupportTicket(id);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Support ticket not found' });
+    }
+
+    console.log(`[SUPPORT_TICKETS] Deleted ${id} by ${req.userProfile?.displayName}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[SUPPORT_TICKETS] Error deleting:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create support ticket (user)
+app.post('/api/support-tickets', requireAuth, async (req, res) => {
+  try {
+    const { subject, description, playerGuid, playerName } = req.body;
+
+    if (!subject || !description) {
+      return res.status(400).json({ error: 'Subject and description are required' });
+    }
+
+    const ticket = await db.createSupportTicket({
+      userId: req.userId,
+      userEmail: req.user?.email,
+      userName: req.userProfile?.displayName || req.user?.name,
+      playerGuid,
+      playerName,
+      subject,
+      description
+    });
+
+    console.log(`[SUPPORT_TICKETS] Created by ${req.userProfile?.displayName || req.user?.email}: "${subject}"`);
+    res.json(ticket);
+  } catch (err) {
+    console.error('[SUPPORT_TICKETS] Error creating:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get user's own support tickets
+app.get('/api/support-tickets/my', requireAuth, async (req, res) => {
+  try {
+    const tickets = await db.getUserSupportTickets(req.userId);
+    res.json(tickets);
+  } catch (err) {
+    console.error('[SUPPORT_TICKETS] Error fetching user tickets:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function getApiSources() {
   return [
     { id: 'manager1', url: env.MXBIKES_API_URL_1, key: env.MXBIKES_API_KEY_1 },
