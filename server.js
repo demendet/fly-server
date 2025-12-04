@@ -1707,7 +1707,14 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
         }
 
         // 4. Update player DB record
-        await db.updatePlayer(upperGuid, { isBanned: true, banReason: banReason });
+        try {
+          await db.pool.query(
+            `UPDATE players SET "isBanned" = true, "banReason" = $1 WHERE guid = $2`,
+            [banReason, upperGuid]
+          );
+        } catch (dbErr) {
+          console.error('[REPORTS] Error updating player ban status:', dbErr.message);
+        }
 
         // 5. Log to ban history
         await db.addBanHistory({
@@ -2420,7 +2427,14 @@ app.post('/api/player/:guid/warnings/:warningId/acknowledge', requireAuth, async
     }
 
     // Also clear the isBanned flag in our database
-    await db.updatePlayer(upperGuid, { isBanned: false, banReason: null, banExpiry: null });
+    try {
+      await db.pool.query(
+        `UPDATE players SET "isBanned" = false, "banReason" = NULL WHERE guid = $1`,
+        [upperGuid]
+      );
+    } catch (dbErr) {
+      console.error('[WARNINGS] Error clearing player ban status:', dbErr.message);
+    }
 
     console.log(`[WARNINGS] Player ${upperGuid} acknowledged warning and was auto-unbanned`);
     res.json({ success: true, warning, unbanResults });
@@ -2510,10 +2524,14 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
     }
 
     // Update player record to show banned status
-    await db.updatePlayer(upperGuid, {
-      isBanned: true,
-      banReason: banReason
-    });
+    try {
+      await db.pool.query(
+        `UPDATE players SET "isBanned" = true, "banReason" = $1 WHERE guid = $2`,
+        [banReason, upperGuid]
+      );
+    } catch (dbErr) {
+      console.error('[ADMIN] Error updating player ban status:', dbErr.message);
+    }
 
     // Log to ban history
     await db.addBanHistory({
