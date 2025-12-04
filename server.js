@@ -3482,44 +3482,60 @@ app.post('/api/admin/unban', requireAuth, requireAdmin, async (req, res) => {
         .slice(0, 99); // Enforce 99 char limit
     };
 
-    // Send unban message before unbanning (only once)
-    let messageSent = false;
+    // Collect ALL servers from ALL managers
+    const allServers = [];
     for (const source of sources) {
       try {
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
-
-        if (servers.length > 0) {
-          const firstServer = servers[0];
-          const serverId = firstServer.id || firstServer.Id;
-
-          // Send unban message if enabled (only once globally)
-          if (templates.unbanMessageEnabled && templates.unbanMessageTemplate && !messageSent) {
-            try {
-              const unbanMsg = formatMessage(templates.unbanMessageTemplate);
-              await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
-                message: unbanMsg
-              });
-              console.log(`[ADMIN] Sent unban message on ${source.id}`);
-              messageSent = true;
-            } catch (msgErr) {
-              console.log(`[ADMIN] Unban message failed: ${msgErr.message}`);
-            }
-          }
-
-          // Perform the unban with message disabled
-          try {
-            const result = await fetchFromManager(source, `/servers/${serverId}/full-unban`, 'POST', {
-              playerGuid,
-              SendUnbanMessage: false // We already sent the message
-            }).catch(() => fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', { playerGuid }));
-            results.push({ source: source.id, result });
-          } catch (err) {
-            errors.push({ source: source.id, error: err.message });
-          }
+        for (const server of servers) {
+          allServers.push({
+            source,
+            serverId: server.id || server.Id,
+            serverName: server.name || server.Name
+          });
         }
       } catch (err) {
-        errors.push({ source: source.id, error: err.message });
+        console.log(`[ADMIN] Failed to get servers from ${source.id}: ${err.message}`);
+      }
+    }
+
+    console.log(`[ADMIN] Global unban: Found ${allServers.length} servers across ${sources.length} managers`);
+
+    // Send unban message to ALL servers (so everyone knows player was unbanned)
+    const unbanMsg = templates.unbanMessageEnabled && templates.unbanMessageTemplate
+      ? formatMessage(templates.unbanMessageTemplate)
+      : null;
+
+    if (unbanMsg) {
+      for (const serverInfo of allServers) {
+        const { source, serverId, serverName } = serverInfo;
+        try {
+          await fetchFromManager(source, `/servers/${serverId}/message`, 'POST', {
+            message: unbanMsg
+          });
+          console.log(`[ADMIN] Sent unban message on ${serverName}`);
+        } catch (msgErr) {
+          console.log(`[ADMIN] Unban message failed on ${serverName}: ${msgErr.message}`);
+        }
+      }
+    }
+
+    // Perform the unban on all servers (to update blacklist everywhere)
+    for (const serverInfo of allServers) {
+      const { source, serverId, serverName } = serverInfo;
+      try {
+        const result = await fetchFromManager(source, `/servers/${serverId}/full-unban`, 'POST', {
+          playerGuid,
+          SendUnbanMessage: false // We already sent the message
+        }).catch(() => fetchFromManager(source, `/servers/${serverId}/unban`, 'POST', { playerGuid }));
+
+        // Only add to results once per manager
+        if (!results.find(r => r.source === source.id)) {
+          results.push({ source: source.id, serverName, result });
+        }
+      } catch (err) {
+        console.log(`[ADMIN] Unban on ${serverName}: ${err.message}`);
       }
     }
 
