@@ -1651,19 +1651,79 @@ app.post('/api/admin/reports/:id/resolve', requireAuth, requireModerator, async 
       return res.status(404).json({ error: 'Report not found' });
     }
 
-    // If action is 'warned', create a warning for the offender
+    // If action is 'warned', issue a full warning (DB record + in-game message + ban until acknowledged)
     if (actionTaken === 'warned' && warningReason) {
       try {
-        await db.createWarning({
-          playerGuid: report.offenderGuid.toUpperCase(),
+        const upperGuid = report.offenderGuid.toUpperCase();
+
+        // 1. Create the warning record
+        const warning = await db.createWarning({
+          playerGuid: upperGuid,
           playerName: report.offenderName,
           reason: warningReason,
           warnedBy: adminName,
           reportId: report.id
         });
         console.log(`[ADMIN] Warning created for ${report.offenderName}: ${warningReason}`);
+
+        // 2. Send warning message in-game via Manager
+        const sources = getApiSources();
+        for (const source of sources) {
+          try {
+            await fetchFromManager(source, '/warn', 'POST', {
+              playerGuid: upperGuid,
+              playerName: report.offenderName,
+              reason: warningReason
+            });
+          } catch (msgErr) {
+            // Player might not be online
+          }
+        }
+
+        // Small delay before banning
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+        // 3. Ban player on all servers until they acknowledge
+        const banReason = `Warning: ${warningReason} - You must acknowledge this warning on your profile at mxb-mods.com to be unbanned`;
+        for (const source of sources) {
+          try {
+            const serversResp = await fetchFromManager(source, '/servers');
+            const servers = Array.isArray(serversResp) ? serversResp : [];
+            for (const server of servers) {
+              const serverId = server.id || server.Id;
+              try {
+                await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+                  playerGuid: upperGuid,
+                  playerName: report.offenderName,
+                  reason: banReason,
+                  duration: 0,
+                  isPermanent: true,
+                  sendPrivateMessage: false,
+                  sendGlobalMessage: false
+                });
+              } catch (banErr) { }
+            }
+          } catch (sourceErr) { }
+        }
+
+        // 4. Update player DB record
+        await db.updatePlayer(upperGuid, { isBanned: true, banReason: banReason });
+
+        // 5. Log to ban history
+        await db.addBanHistory({
+          playerGuid: upperGuid,
+          playerName: report.offenderName,
+          action: 'ban',
+          reason: banReason,
+          isGlobal: true,
+          isPermanent: true,
+          performedBy: adminName,
+          sourceManager: 'Website (Warning)'
+        });
+
+        console.log(`[ADMIN] Warning issued and player banned: ${report.offenderName}`);
       } catch (warnErr) {
-        console.error('[ADMIN] Warning creation error:', warnErr.message);
+        console.error('[ADMIN] Warning flow error:', warnErr.message);
       }
     }
 
@@ -2380,16 +2440,95 @@ app.post('/api/admin/warn', requireAuth, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Player GUID and reason are required' });
     }
 
+    const upperGuid = playerGuid.toUpperCase();
+    const adminName = req.user.displayName || req.user.email;
+
+    // Create the warning record
     const warning = await db.createWarning({
-      playerGuid: playerGuid.toUpperCase(),
+      playerGuid: upperGuid,
       playerName: playerName || 'Unknown',
       reason,
-      warnedBy: req.user.displayName || req.user.email,
+      warnedBy: adminName,
       reportId
     });
 
-    console.log(`[ADMIN] Warning issued to ${playerName} (${playerGuid}) by ${req.user.displayName}: ${reason}`);
-    res.json({ success: true, warning });
+    // First, send the warning message to the player in-game (before banning/kicking)
+    console.log(`[ADMIN] Sending warning message to ${playerName} (${upperGuid})...`);
+
+    const sources = getApiSources();
+    const messageResults = [];
+
+    // Send warning message via Manager's /warn endpoint (sends private + global messages)
+    for (const source of sources) {
+      try {
+        const result = await fetchFromManager(source, '/warn', 'POST', {
+          playerGuid: upperGuid,
+          playerName: playerName || 'Unknown',
+          reason: reason
+        });
+        messageResults.push({ source: source.id, success: true, result });
+      } catch (msgErr) {
+        // Player might not be online, that's okay
+        messageResults.push({ source: source.id, success: false, error: msgErr.message });
+      }
+    }
+
+    // Small delay to ensure message is delivered before kick
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Ban the player on all servers until they acknowledge the warning
+    console.log(`[ADMIN] Warning issued to ${playerName} (${upperGuid}) - banning until acknowledged...`);
+
+    const banResults = [];
+    const banReason = `Warning: ${reason} - You must acknowledge this warning on your profile at mxb-mods.com to be unbanned`;
+
+    for (const source of sources) {
+      try {
+        const serversResp = await fetchFromManager(source, '/servers');
+        const servers = Array.isArray(serversResp) ? serversResp : [];
+
+        for (const server of servers) {
+          const serverId = server.id || server.Id;
+          try {
+            await fetchFromManager(source, `/servers/${serverId}/ban`, 'POST', {
+              playerGuid: upperGuid,
+              playerName: playerName || 'Unknown',
+              reason: banReason,
+              duration: 0, // Permanent until acknowledged
+              isPermanent: true,
+              sendPrivateMessage: false, // Don't send ban message, we already sent warning message
+              sendGlobalMessage: false   // Don't broadcast ban, warning was already broadcast
+            });
+            banResults.push({ serverId, success: true });
+          } catch (banErr) {
+            banResults.push({ serverId, success: false, error: banErr.message });
+          }
+        }
+      } catch (sourceErr) {
+        console.error(`[ADMIN] Error banning from source ${source.name}:`, sourceErr.message);
+      }
+    }
+
+    // Update player record to show banned status
+    await db.updatePlayer(upperGuid, {
+      isBanned: true,
+      banReason: banReason
+    });
+
+    // Log to ban history
+    await db.addBanHistory({
+      playerGuid: upperGuid,
+      playerName: playerName || 'Unknown',
+      action: 'ban',
+      reason: banReason,
+      isGlobal: true,
+      isPermanent: true,
+      performedBy: adminName,
+      sourceManager: 'Website (Warning)'
+    });
+
+    console.log(`[ADMIN] Warning issued and player banned by ${adminName}: ${reason}`);
+    res.json({ success: true, warning, messageResults, banResults });
   } catch (err) {
     console.error('[ADMIN] Warn error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2409,6 +2548,33 @@ app.delete('/api/admin/warnings/:id', requireAuth, requireAdmin, async (req, res
     res.json({ success: true });
   } catch (err) {
     console.error('[ADMIN] Delete warning error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get recent acknowledged warnings (for admin notifications)
+app.get('/api/admin/warnings/acknowledged', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const acknowledged = await db.getRecentAcknowledgedWarnings(limit);
+    res.json(acknowledged);
+  } catch (err) {
+    console.error('[ADMIN] Get acknowledged warnings error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get all warnings (for admin view)
+app.get('/api/admin/warnings', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const result = await db.pool.query(`
+      SELECT * FROM player_warnings
+      ORDER BY "createdAt" DESC
+      LIMIT 100
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('[ADMIN] Get all warnings error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3665,29 +3831,117 @@ app.delete('/api/admin/servers/:serverId/automatedmessages/:messageId', requireA
   }
 });
 
-// Warn player on specific server
-app.post('/api/admin/servers/:serverId/warn', requireAuth, requireModerator, async (req, res) => {
+// Get ALL automated messages from ALL managers and ALL servers
+app.get('/api/admin/settings/automatedmessages', requireAuth, requireModerator, async (req, res) => {
   try {
-    const { serverId } = req.params;
-    const warnData = req.body;
-    const result = await proxyToManager(`/servers/${serverId}/warn`, 'POST', warnData);
-    console.log(`[ADMIN] Warned player ${warnData.playerName || warnData.playerGuid} on server ${serverId}`);
-    res.json(result);
+    const { results, errors } = await proxyToAllManagers('/settings/automatedmessages', 'GET');
+
+    // Merge results from all managers
+    const allMessages = [];
+    for (const { source, result } of results) {
+      if (Array.isArray(result)) {
+        for (const msg of result) {
+          allMessages.push({
+            ...msg,
+            managerId: source
+          });
+        }
+      }
+    }
+
+    res.json({ messages: allMessages, errors });
   } catch (err) {
-    console.error('[ADMIN] Warn player error:', err.message);
+    console.error('[ADMIN] Get all automated messages error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Warn player on all connected servers
-app.post('/api/admin/warn', requireAuth, requireModerator, async (req, res) => {
+// Add automated message to a specific manager's server
+app.post('/api/admin/settings/automatedmessages', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const warnData = req.body;
-    const result = await proxyToManager('/warn', 'POST', warnData);
-    console.log(`[ADMIN] Warned player ${warnData.playerName || warnData.playerGuid} on all servers`);
+    const { serverId, message, intervalMinutes, isEnabled, isGlobal, managerId } = req.body;
+
+    if (!serverId || !message) {
+      return res.status(400).json({ error: 'Server ID and message are required' });
+    }
+
+    // Use specific manager if provided, otherwise use default proxy
+    const sources = getApiSources();
+    const targetSource = managerId ? sources.find(s => s.id === managerId) : sources[0];
+
+    if (!targetSource) {
+      return res.status(400).json({ error: 'Invalid manager specified' });
+    }
+
+    const result = await fetchFromManager(targetSource, `/servers/${serverId}/automatedmessages`, 'POST', {
+      message: message.slice(0, 99), // Enforce 99 char limit
+      intervalMinutes: intervalMinutes || 5,
+      isEnabled: isEnabled !== false,
+      isGlobal: isGlobal || false
+    });
+
+    console.log(`[ADMIN] Added automated message to server ${serverId} on ${targetSource.id}`);
     res.json(result);
   } catch (err) {
-    console.error('[ADMIN] Warn player (all servers) error:', err.message);
+    console.error('[ADMIN] Add automated message error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete automated message from specific manager
+app.delete('/api/admin/settings/automatedmessages/:messageId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { serverId, managerId } = req.query;
+
+    if (!serverId) {
+      return res.status(400).json({ error: 'Server ID is required' });
+    }
+
+    const sources = getApiSources();
+    const targetSource = managerId ? sources.find(s => s.id === managerId) : sources[0];
+
+    if (!targetSource) {
+      return res.status(400).json({ error: 'Invalid manager specified' });
+    }
+
+    const result = await fetchFromManager(targetSource, `/servers/${serverId}/automatedmessages/${messageId}`, 'DELETE');
+    console.log(`[ADMIN] Deleted automated message ${messageId} from server ${serverId} on ${targetSource.id}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Delete automated message error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Toggle automated message enabled/disabled
+app.put('/api/admin/settings/automatedmessages/:messageId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { serverId, managerId, isEnabled, message, intervalMinutes, isGlobal } = req.body;
+
+    if (!serverId) {
+      return res.status(400).json({ error: 'Server ID is required' });
+    }
+
+    const sources = getApiSources();
+    const targetSource = managerId ? sources.find(s => s.id === managerId) : sources[0];
+
+    if (!targetSource) {
+      return res.status(400).json({ error: 'Invalid manager specified' });
+    }
+
+    const result = await fetchFromManager(targetSource, `/servers/${serverId}/automatedmessages/${messageId}`, 'PUT', {
+      message,
+      intervalMinutes,
+      isEnabled,
+      isGlobal
+    });
+
+    console.log(`[ADMIN] Updated automated message ${messageId} on server ${serverId} on ${targetSource.id}`);
+    res.json(result);
+  } catch (err) {
+    console.error('[ADMIN] Update automated message error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
