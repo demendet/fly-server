@@ -421,7 +421,7 @@ export class PostgresDatabaseManager {
           "issueType" TEXT NOT NULL,
           subject TEXT NOT NULL,
           description TEXT NOT NULL,
-          status TEXT DEFAULT 'open',
+          status TEXT DEFAULT 'pending',
           resolution TEXT,
           "resolvedBy" TEXT,
           "resolvedAt" BIGINT,
@@ -2322,7 +2322,7 @@ export class PostgresDatabaseManager {
 
     await this.pool.query(`
       INSERT INTO support_tickets (id, "userId", "userEmail", "reporterGuid", "reporterName", "issueType", subject, description, status, "createdAt", "updatedAt")
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', $9, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $9)
     `, [
       id,
       ticket.userId,
@@ -2335,7 +2335,7 @@ export class PostgresDatabaseManager {
       now
     ]);
 
-    return { id, ...ticket, status: 'open', createdAt: now, updatedAt: now };
+    return { id, ...ticket, status: 'pending', createdAt: now, updatedAt: now };
   }
 
   async getAllSupportTickets(status = null) {
