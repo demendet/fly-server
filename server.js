@@ -3765,13 +3765,20 @@ app.get('/api/admin/settings/messages', requireAuth, requireAdmin, async (req, r
   }
 });
 
-// Update message templates and settings
+// Update message templates and settings (sends to ALL managers)
 app.put('/api/admin/settings/messages', requireAuth, requireAdmin, async (req, res) => {
   try {
     const settings = req.body;
-    const result = await proxyToManager('/settings/messages', 'PUT', settings);
-    console.log(`[ADMIN] Updated message settings`);
-    res.json(result);
+    // Use proxyToAllManagers to update settings on ALL managers, not just the first one
+    const { results, errors } = await proxyToAllManagers('/settings/messages', 'PUT', settings);
+    console.log(`[ADMIN] Updated message settings on ${results.length} manager(s), ${errors.length} error(s)`);
+
+    if (results.length === 0 && errors.length > 0) {
+      throw new Error(`All managers failed: ${errors.map(e => e.error).join(', ')}`);
+    }
+
+    // Return the first successful result for compatibility
+    res.json(results.length > 0 ? results[0].result : { success: true });
   } catch (err) {
     console.error('[ADMIN] Update message settings error:', err.message);
     res.status(500).json({ error: err.message });
