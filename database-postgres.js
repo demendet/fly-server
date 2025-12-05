@@ -16,6 +16,39 @@ export class PostgresDatabaseManager {
     this.pool.on('error', (err) => {
       console.error('[POSTGRES] Unexpected pool error:', err);
     });
+
+    // Internal query cache for expensive operations
+    this._queryCache = {
+      playersSlim: { data: null, timestamp: 0, ttl: 2500 },    // 2.5s cache
+      trackRecords: { data: null, timestamp: 0, ttl: 5000 },   // 5s cache - changes less frequently
+      topMMR: { data: null, timestamp: 0, ttl: 5000 },         // 5s cache
+      topSR: { data: null, timestamp: 0, ttl: 5000 },          // 5s cache
+      sessionsCount: { data: null, timestamp: 0, ttl: 10000 }, // 10s cache - rarely changes
+      recentSessions: { data: null, timestamp: 0, ttl: 2500 }, // 2.5s cache
+    };
+  }
+
+  // Helper to get cached query result or run query
+  async _cachedQuery(cacheKey, queryFn) {
+    const cache = this._queryCache[cacheKey];
+    const now = Date.now();
+    if (cache && cache.data && (now - cache.timestamp) < cache.ttl) {
+      return cache.data;
+    }
+    const result = await queryFn();
+    if (cache) {
+      cache.data = result;
+      cache.timestamp = now;
+    }
+    return result;
+  }
+
+  // Invalidate cache when data changes
+  _invalidateCache(cacheKey) {
+    if (this._queryCache[cacheKey]) {
+      this._queryCache[cacheKey].data = null;
+      this._queryCache[cacheKey].timestamp = 0;
+    }
   }
 
   async initializeTables() {
@@ -85,6 +118,8 @@ export class PostgresDatabaseManager {
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions("createdAt" DESC);
         CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions("isActive") WHERE "isActive" = TRUE;
+        CREATE INDEX IF NOT EXISTS idx_sessions_finalized ON sessions("raceFinalized", "totalEntries", "startTime" DESC) WHERE "raceFinalized" = TRUE AND "totalEntries" > 0;
+        CREATE INDEX IF NOT EXISTS idx_sessions_starttime ON sessions("startTime" DESC);
       `);
 
       await client.query(`
@@ -625,6 +660,9 @@ export class PostgresDatabaseManager {
 
       await client.query('COMMIT');
 
+      // Invalidate player caches after update
+      this._invalidateCache('playersSlim');
+
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -724,11 +762,25 @@ export class PostgresDatabaseManager {
   }
 
   async getTopPlayersByMMR(limit = 100) {
+    // Only cache the default 100 limit (used by bulk endpoint)
+    if (limit === 100) {
+      return this._cachedQuery('topMMR', async () => {
+        const result = await this.pool.query('SELECT * FROM players ORDER BY mmr DESC LIMIT $1', [limit]);
+        return result.rows.map(row => this.rowToPlayer(row));
+      });
+    }
     const result = await this.pool.query('SELECT * FROM players ORDER BY mmr DESC LIMIT $1', [limit]);
     return result.rows.map(row => this.rowToPlayer(row));
   }
 
   async getTopPlayersBySR(limit = 100) {
+    // Only cache the default 100 limit (used by bulk endpoint)
+    if (limit === 100) {
+      return this._cachedQuery('topSR', async () => {
+        const result = await this.pool.query('SELECT * FROM players ORDER BY "safetyRating" DESC LIMIT $1', [limit]);
+        return result.rows.map(row => this.rowToPlayer(row));
+      });
+    }
     const result = await this.pool.query('SELECT * FROM players ORDER BY "safetyRating" DESC LIMIT $1', [limit]);
     return result.rows.map(row => this.rowToPlayer(row));
   }
@@ -859,6 +911,12 @@ export class PostgresDatabaseManager {
       }
 
       await client.query('COMMIT');
+
+      // Invalidate player and leaderboard caches after MMR update
+      this._invalidateCache('playersSlim');
+      this._invalidateCache('topMMR');
+      this._invalidateCache('topSR');
+
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -998,8 +1056,10 @@ export class PostgresDatabaseManager {
 
   // Get ALL players with slim data (for bulk endpoint - fast, small payload)
   async getAllPlayersSlim() {
-    const result = await this.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime" FROM players ORDER BY "lastSeen" DESC');
-    return result.rows.map(row => this.rowToPlayerSlim(row));
+    return this._cachedQuery('playersSlim', async () => {
+      const result = await this.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime" FROM players ORDER BY "lastSeen" DESC');
+      return result.rows.map(row => this.rowToPlayerSlim(row));
+    });
   }
 
   // Update Steam avatar for a player
@@ -1133,6 +1193,12 @@ export class PostgresDatabaseManager {
       `UPDATE sessions SET ${setParts.join(', ')} WHERE id = $${paramCount}`,
       values
     );
+
+    // Invalidate session caches when sessions are finalized
+    if (updates.raceFinalized || updates.hasFinished) {
+      this._invalidateCache('recentSessions');
+      this._invalidateCache('sessionsCount');
+    }
   }
 
   async batchUpdateSessions(sessionUpdates) {
@@ -1165,13 +1231,39 @@ export class PostgresDatabaseManager {
   }
 
   async getRecentSessions(limit = 50) {
-    const result = await this.pool.query(`
-      SELECT * FROM sessions
-      WHERE ("raceFinalized" = TRUE AND "totalEntries" > 0) OR "isActive" = TRUE
+    // Use UNION for better index utilization instead of OR
+    const query = `
+      (SELECT * FROM sessions WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 ORDER BY "startTime" DESC LIMIT $1)
+      UNION ALL
+      (SELECT * FROM sessions WHERE "isActive" = TRUE ORDER BY "startTime" DESC LIMIT $1)
       ORDER BY "startTime" DESC
       LIMIT $1
-    `, [limit]);
-    return result.rows.map(row => this.rowToSession(row));
+    `;
+
+    // Only cache the default 50 limit (used by bulk endpoint)
+    if (limit === 50) {
+      return this._cachedQuery('recentSessions', async () => {
+        const result = await this.pool.query(query, [limit]);
+        // Remove duplicates (a session could be both active and finalized briefly)
+        const seen = new Set();
+        return result.rows
+          .filter(row => {
+            if (seen.has(row.id)) return false;
+            seen.add(row.id);
+            return true;
+          })
+          .map(row => this.rowToSession(row));
+      });
+    }
+    const result = await this.pool.query(query, [limit]);
+    const seen = new Set();
+    return result.rows
+      .filter(row => {
+        if (seen.has(row.id)) return false;
+        seen.add(row.id);
+        return true;
+      })
+      .map(row => this.rowToSession(row));
   }
 
   // Get ALL finalized sessions (for bulk endpoint - like getAllPlayers)
@@ -1209,11 +1301,13 @@ export class PostgresDatabaseManager {
   }
 
   async getTotalFinalizedSessionsCount() {
-    const result = await this.pool.query(`
-      SELECT COUNT(*) as count FROM sessions
-      WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
-    `);
-    return parseInt(result.rows[0].count) || 0;
+    return this._cachedQuery('sessionsCount', async () => {
+      const result = await this.pool.query(`
+        SELECT COUNT(*) as count FROM sessions
+        WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
+      `);
+      return parseInt(result.rows[0].count) || 0;
+    });
   }
 
   rowToSession(row) {
@@ -1273,6 +1367,9 @@ export class PostgresDatabaseManager {
         `, [id, playerGuid, playerName, trackName, lapTime, bikeName || null, bikeCategory || null, sessionType, now]);
 
         console.log(`[PB-INSTANT] ${playerName} new PB on ${trackName}: ${lapTime}s${improvement > 0 ? ` (-${improvement.toFixed(3)}s)` : ' (first time)'}`);
+
+        // Invalidate track records cache
+        this._invalidateCache('trackRecords');
 
         return {
           isPB: true,
@@ -1335,11 +1432,13 @@ export class PostgresDatabaseManager {
 
   // Get ALL track records (for backwards compatibility)
   async getAllTrackRecords() {
-    const result = await this.pool.query(`
-      SELECT * FROM track_records
-      ORDER BY "trackName", "lapTime" ASC
-    `);
-    return result.rows.map(row => this.rowToTrackRecord(row));
+    return this._cachedQuery('trackRecords', async () => {
+      const result = await this.pool.query(`
+        SELECT * FROM track_records
+        ORDER BY "trackName", "lapTime" ASC
+      `);
+      return result.rows.map(row => this.rowToTrackRecord(row));
+    });
   }
 
   // Get only TOP records per track (much smaller payload for bulk endpoint)

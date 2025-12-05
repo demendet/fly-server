@@ -547,10 +547,17 @@ function startBulkCacheLoop() {
 app.get('/api/sessions/all', async (req, res) => {
   try {
     if (allSessionsCache.data) {
+      res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+      res.set('ETag', `"${allSessionsCache.timestamp}"`);
+      const clientEtag = req.get('If-None-Match');
+      if (clientEtag === `"${allSessionsCache.timestamp}"`) {
+        return res.status(304).end();
+      }
       return res.json(allSessionsCache.data);
     }
     // Fallback if cache not ready
     await regenerateAllSessionsCache();
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     res.json(allSessionsCache.data || []);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -561,10 +568,17 @@ app.get('/api/sessions/all', async (req, res) => {
 app.get('/api/players/all', async (req, res) => {
   try {
     if (allPlayersCache.data) {
+      res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+      res.set('ETag', `"${allPlayersCache.timestamp}"`);
+      const clientEtag = req.get('If-None-Match');
+      if (clientEtag === `"${allPlayersCache.timestamp}"`) {
+        return res.status(304).end();
+      }
       return res.json(allPlayersCache.data);
     }
     // Fallback if cache not ready
     await regenerateAllPlayersCache();
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     res.json(allPlayersCache.data || []);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -575,12 +589,23 @@ app.get('/api/bulk', async (req, res) => {
   try {
     // INSTANT response from pre-generated cache
     if (bulkResponseCache.data) {
+      // Add caching headers - allows browser to cache for 3s, use stale for 10s while revalidating
+      res.set('Cache-Control', 'public, max-age=3, stale-while-revalidate=10');
+      res.set('ETag', `"${bulkResponseCache.timestamp}"`);
+
+      // Check If-None-Match for conditional request
+      const clientEtag = req.get('If-None-Match');
+      if (clientEtag === `"${bulkResponseCache.timestamp}"`) {
+        return res.status(304).end(); // Not modified - browser uses cached version
+      }
+
       return res.json(bulkResponseCache.data);
     }
 
     // Fallback: Generate on-demand if cache not ready yet (only on first request after startup)
     console.log('[BULK] Cache not ready, generating on-demand...');
     await regenerateBulkCache();
+    res.set('Cache-Control', 'public, max-age=3, stale-while-revalidate=10');
     res.json(bulkResponseCache.data);
   } catch (err) {
     res.status(500).json({ error: err.message });
