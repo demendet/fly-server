@@ -4489,10 +4489,13 @@ async function processAutomatedMessages() {
         const serversResp = await fetchFromManager(source, '/servers');
         const servers = Array.isArray(serversResp) ? serversResp : [];
         for (const server of servers) {
+          // Get player count - check various possible property names
+          const playerCount = server.currentPlayerCount || server.CurrentPlayerCount || server.playersOnline || server.PlayersOnline || 0;
           allServers.push({
             ...server,
             source,
-            serverId: server.id || server.Id
+            serverId: server.id || server.Id,
+            playerCount
           });
         }
       } catch (err) {
@@ -4505,29 +4508,44 @@ async function processAutomatedMessages() {
       return;
     }
 
+    // Filter to only servers with players online (> 0)
+    const serversWithPlayers = allServers.filter(s => s.playerCount > 0);
+
     // Process each due message
     for (const msg of dueMessages) {
       try {
         if (msg.isGlobal) {
-          // Global message - send to ALL servers
-          for (const server of allServers) {
+          // Global message - send to servers WITH PLAYERS, with 3 second delay between each
+          let sentCount = 0;
+          for (let i = 0; i < serversWithPlayers.length; i++) {
+            const server = serversWithPlayers[i];
             try {
               await fetchFromManager(server.source, `/servers/${server.serverId}/message`, 'POST', {
                 message: msg.message
               });
+              sentCount++;
+
+              // 3 second delay between servers to prevent lag/rubberbanding (skip after last)
+              if (i < serversWithPlayers.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 3000));
+              }
             } catch (sendErr) {
               // Continue with other servers
             }
           }
-          console.log(`[AUTO-MSG] Sent global message: "${msg.message.slice(0, 30)}..." to ${allServers.length} servers`);
+          if (sentCount > 0) {
+            console.log(`[AUTO-MSG] Sent global message: "${msg.message.slice(0, 30)}..." to ${sentCount} servers (skipped ${allServers.length - serversWithPlayers.length} empty)`);
+          }
         } else if (msg.serverId) {
-          // Server-specific message - find the server and send
+          // Server-specific message - find the server and send only if it has players
           const targetServer = allServers.find(s => s.serverId === msg.serverId);
-          if (targetServer) {
+          if (targetServer && targetServer.playerCount > 0) {
             await fetchFromManager(targetServer.source, `/servers/${targetServer.serverId}/message`, 'POST', {
               message: msg.message
             });
             console.log(`[AUTO-MSG] Sent message to ${msg.serverName || msg.serverId}: "${msg.message.slice(0, 30)}..."`);
+          } else if (targetServer) {
+            console.log(`[AUTO-MSG] Skipped message to ${msg.serverName || msg.serverId} - no players online`);
           }
         }
 
