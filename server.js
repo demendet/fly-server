@@ -25,6 +25,7 @@ try {
 const ADMIN_ROLES = ['admin', 'superadmin', 'root'];
 const MODERATOR_ROLES = ['moderator', 'admin', 'superadmin', 'root'];
 
+
 const mxbmrp3Stats = {
   totalRequests: 0,
   requestsToday: 0,
@@ -619,6 +620,59 @@ app.get('/api/banned-guids', async (req, res) => {
     res.json({ bannedGuids });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint to get all players under investigation
+app.get('/api/under-investigation', async (req, res) => {
+  try {
+    const players = await db.getPlayersUnderInvestigation();
+    res.json({ players });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Put player under investigation (admin only)
+app.post('/api/admin/investigate/:guid', requireAuth, requireRole(ADMIN_ROLES), async (req, res) => {
+  try {
+    const { guid } = req.params;
+    const { reason } = req.body;
+
+    // Get admin name from Firebase
+    let adminName = 'Admin';
+    if (firebaseAdmin) {
+      const userRecord = await firebaseAdmin.auth().getUser(req.userId);
+      adminName = userRecord.displayName || userRecord.email || 'Admin';
+    }
+
+    const result = await db.investigatePlayer(guid.toUpperCase(), reason || 'Under investigation', adminName);
+    console.log(`[ADMIN] ${adminName} put player ${guid} under investigation. Original MMR: ${result.originalMMR}`);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[ADMIN] Investigate player error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Restore player from investigation (admin only)
+app.post('/api/admin/restore/:guid', requireAuth, requireRole(ADMIN_ROLES), async (req, res) => {
+  try {
+    const { guid } = req.params;
+
+    // Get admin name from Firebase
+    let adminName = 'Admin';
+    if (firebaseAdmin) {
+      const userRecord = await firebaseAdmin.auth().getUser(req.userId);
+      adminName = userRecord.displayName || userRecord.email || 'Admin';
+    }
+
+    const result = await db.restorePlayer(guid.toUpperCase());
+    console.log(`[ADMIN] ${adminName} restored player ${guid}. Restored MMR: ${result.restoredMMR}`);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[ADMIN] Restore player error:', err.message);
+    res.status(400).json({ error: err.message });
   }
 });
 

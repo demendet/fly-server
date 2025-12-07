@@ -427,6 +427,18 @@ export class PostgresDatabaseManager {
         console.log('[POSTGRES] totalPlaytime migration:', migrationErr.message);
       }
 
+      // Migration: Add investigation columns for admin player management
+      try {
+        await client.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS "underInvestigation" BOOLEAN DEFAULT FALSE`);
+        await client.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS "investigationReason" TEXT`);
+        await client.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS "investigationBy" TEXT`);
+        await client.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS "investigationDate" BIGINT`);
+        await client.query(`ALTER TABLE players ADD COLUMN IF NOT EXISTS "frozenMMR" INTEGER`);  // Stores original MMR when frozen
+        console.log('[POSTGRES] Investigation columns migration complete');
+      } catch (migrationErr) {
+        console.log('[POSTGRES] Investigation migration:', migrationErr.message);
+      }
+
       // Feature Requests table - for admin feature/bug requests to developer
       await client.query(`
         CREATE TABLE IF NOT EXISTS feature_requests (
@@ -925,6 +937,75 @@ export class PostgresDatabaseManager {
     }
   }
 
+  // Put player under investigation - saves their MMR and sets it to 1
+  async investigatePlayer(guid, reason, adminName) {
+    const player = await this.getPlayer(guid);
+    if (!player) throw new Error('Player not found');
+
+    if (player.underInvestigation) {
+      throw new Error('Player is already under investigation');
+    }
+
+    await this.pool.query(`
+      UPDATE players SET
+        "underInvestigation" = TRUE,
+        "investigationReason" = $1,
+        "investigationBy" = $2,
+        "investigationDate" = $3,
+        "frozenMMR" = mmr,
+        mmr = 1,
+        "updatedAt" = $3
+      WHERE guid = $4
+    `, [reason, adminName, Date.now(), guid]);
+
+    // Invalidate caches
+    this._invalidateCache('playersSlim');
+    this._invalidateCache('topMMR');
+
+    return { originalMMR: player.mmr };
+  }
+
+  // Restore player from investigation - gives back their original MMR
+  async restorePlayer(guid) {
+    const player = await this.getPlayer(guid);
+    if (!player) throw new Error('Player not found');
+
+    if (!player.underInvestigation) {
+      throw new Error('Player is not under investigation');
+    }
+
+    const originalMMR = player.frozenMMR || 1000;
+
+    await this.pool.query(`
+      UPDATE players SET
+        "underInvestigation" = FALSE,
+        "investigationReason" = NULL,
+        "investigationBy" = NULL,
+        "investigationDate" = NULL,
+        mmr = $1,
+        "frozenMMR" = NULL,
+        "updatedAt" = $2
+      WHERE guid = $3
+    `, [originalMMR, Date.now(), guid]);
+
+    // Invalidate caches
+    this._invalidateCache('playersSlim');
+    this._invalidateCache('topMMR');
+
+    return { restoredMMR: originalMMR };
+  }
+
+  // Get all players under investigation
+  async getPlayersUnderInvestigation() {
+    const result = await this.pool.query(`
+      SELECT guid, "displayName", "investigationReason", "investigationBy", "investigationDate", "frozenMMR"
+      FROM players
+      WHERE "underInvestigation" = TRUE
+      ORDER BY "investigationDate" DESC
+    `);
+    return result.rows;
+  }
+
   async getPlayerSessions(guid, limit = 20) {
     const result = await this.pool.query(`
       SELECT s.*, ps.position, ps."bestLapTime", ps."totalLaps", ps."didFinish", ps."mmrChange", ps."srChange"
@@ -1031,7 +1112,13 @@ export class PostgresDatabaseManager {
       banExpiry: row.banExpiry ? parseInt(row.banExpiry) : null,
       notes: row.notes,
       profileImageUrl: row.steamAvatarUrl || null,
-      totalPlaytime: row.totalPlaytime ? parseInt(row.totalPlaytime) : 0
+      totalPlaytime: row.totalPlaytime ? parseInt(row.totalPlaytime) : 0,
+      // Investigation fields
+      underInvestigation: row.underInvestigation || false,
+      investigationReason: row.investigationReason,
+      investigationBy: row.investigationBy,
+      investigationDate: row.investigationDate ? parseInt(row.investigationDate) : null,
+      frozenMMR: row.frozenMMR
     };
   }
 
@@ -1050,14 +1137,15 @@ export class PostgresDatabaseManager {
       firstSeen: row.firstSeen ? parseInt(row.firstSeen) : null,
       currentServer: row.currentServer,
       profileImageUrl: row.steamAvatarUrl || null,
-      totalPlaytime: row.totalPlaytime ? parseInt(row.totalPlaytime) : 0
+      totalPlaytime: row.totalPlaytime ? parseInt(row.totalPlaytime) : 0,
+      underInvestigation: row.underInvestigation || false
     };
   }
 
   // Get ALL players with slim data (for bulk endpoint - fast, small payload)
   async getAllPlayersSlim() {
     return this._cachedQuery('playersSlim', async () => {
-      const result = await this.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime" FROM players ORDER BY "lastSeen" DESC');
+      const result = await this.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime", "underInvestigation" FROM players ORDER BY "lastSeen" DESC');
       return result.rows.map(row => this.rowToPlayerSlim(row));
     });
   }
