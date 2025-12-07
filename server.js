@@ -57,7 +57,7 @@ async function requireAuth(req, res, next) {
   }
 }
 
-async function requireRole(allowedRoles) {
+function requireRole(allowedRoles) {
   return async (req, res, next) => {
     if (!req.userId) {
       return res.status(401).json({ error: 'Not authenticated' });
