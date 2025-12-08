@@ -681,7 +681,9 @@ export class StateManager {
             bikeName: r.bike_name || r.bike_short_name || '',
             gap: r.gap || 0,
             driverStatus: r.driver_status || null,
-            holeshotTime: r.holeshot_time || null
+            holeshotTime: r.holeshot_time || null,
+            contacts: r.contacts || [],
+            invalidLaps: r.invalid_laps || 0
           }));
 
         const mmrChanges = this.db.calculateMMRChanges(raceResults);
