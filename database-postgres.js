@@ -975,6 +975,28 @@ export class PostgresDatabaseManager {
       srChange -= invalidLaps * 0.002; // -0.2% per invalid lap
     }
 
+    // Time penalties (track cutting that resulted in time penalty)
+    const penalties = player.penalties || [];
+    const cuttingPenalties = penalties.filter(p => p.offence === 'CUTTING' || p.type === 'TIME');
+    if (cuttingPenalties.length > 0) {
+      // Each time penalty for cutting = -0.3%
+      srChange -= cuttingPenalties.length * 0.003;
+
+      // Additional penalty based on total time added
+      const totalPenaltyTime = cuttingPenalties.reduce((sum, p) => sum + (p.penalty_time || 0), 0);
+      if (totalPenaltyTime > 0) {
+        // -0.1% per 5 seconds of penalty time (so 15s = -0.3% extra)
+        const timePenalty = Math.floor(totalPenaltyTime / 5) * 0.001;
+        srChange -= timePenalty;
+      }
+    }
+
+    // Jumpstart penalty (very serious - unfair advantage)
+    const jumpstartPenalties = penalties.filter(p => p.offence === 'JUMPSTART');
+    if (jumpstartPenalties.length > 0) {
+      srChange -= jumpstartPenalties.length * 0.01; // -1% per jumpstart
+    }
+
     // Special case: Serial crasher detection (10+ contacts in a race)
     if (contacts.length >= 10) {
       const excessContacts = contacts.length - 10;
@@ -989,7 +1011,16 @@ export class PostgresDatabaseManager {
 
     // Detailed logging for transparency
     const totalWallContacts = lowSpeedWallContacts + mediumSpeedWallContacts + highSpeedWallContacts;
-    console.log(`[SR] ${player.playerName}: SR ${(srChange * 100).toFixed(2)}% | Contacts: ${contacts.length} (${bikeContactsTotal} bike, ${totalWallContacts} wall) | Laps: ${totalLaps} (${estimatedCleanLaps} clean) | Invalid: ${invalidLaps}`);
+    const totalPenalties = penalties.length;
+    const cuttingCount = cuttingPenalties.length;
+    const jumpstartCount = jumpstartPenalties.length;
+
+    let penaltyLog = '';
+    if (totalPenalties > 0) {
+      penaltyLog = ` | Penalties: ${totalPenalties} (${cuttingCount} cutting, ${jumpstartCount} jumpstart)`;
+    }
+
+    console.log(`[SR] ${player.playerName}: SR ${(srChange * 100).toFixed(2)}% | Contacts: ${contacts.length} (${bikeContactsTotal} bike, ${totalWallContacts} wall) | Laps: ${totalLaps} (${estimatedCleanLaps} clean) | Invalid: ${invalidLaps}${penaltyLog}`);
 
     return srChange;
   }

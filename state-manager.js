@@ -683,7 +683,8 @@ export class StateManager {
             driverStatus: r.driver_status || null,
             holeshotTime: r.holeshot_time || null,
             contacts: r.contacts || [],
-            invalidLaps: r.invalid_laps || 0
+            invalidLaps: r.invalid_laps || 0,
+            penalties: r.penalties || []
           }));
 
         const mmrChanges = this.db.calculateMMRChanges(raceResults);
