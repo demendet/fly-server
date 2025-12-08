@@ -5,14 +5,18 @@ export class PostgresDatabaseManager {
   constructor(connectionString) {
     this.pool = new Pool({
       connectionString,
-      max: 15,
+      max: 20,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      statement_timeout: 15000,
+      query_timeout: 15000,
       keepAlive: true,
       keepAliveInitialDelayMillis: 10000,
       allowExitOnIdle: false,
     });
     this.pool.on('error', (err) => console.error('[DB] Pool error:', err));
+    this._queryCount = 0;
+    this._slowQueryThreshold = 3000;
     this._cache = {
       playersSlim: { data: null, ts: 0, ttl: 2500 },
       trackRecords: { data: null, ts: 0, ttl: 5000 },

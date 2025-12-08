@@ -91,25 +91,27 @@ function getAllBannedGuids() { return bannedGuidsCache.guids; }
 async function syncBannedGuidsBackground() {
   if (bannedGuidsCache.syncing) return;
   bannedGuidsCache.syncing = true;
+  const globalTimeout = setTimeout(() => { console.error('[BAN-SYNC] Global timeout'); bannedGuidsCache.syncing = false; }, 30000);
   try {
     const guids = new Set();
     const sources = getApiSources();
     await Promise.all(sources.map(async (src) => {
       try {
-        const servers = await fetchFromManager(src, '/servers');
+        const servers = await fetchFromManager(src, '/servers', 'GET', null, 5000);
         if (!Array.isArray(servers)) return;
         await Promise.all(servers.map(async (srv) => {
           try {
-            const bans = await fetchFromManager(src, `/servers/${srv.id || srv.Id}/bans`);
+            const bans = await fetchFromManager(src, `/servers/${srv.id || srv.Id}/bans`, 'GET', null, 3000);
             if (Array.isArray(bans)) bans.forEach(b => { if ((b.isActive ?? b.IsActive ?? true)) guids.add((b.playerGuid || b.PlayerGuid || '').toUpperCase()); });
           } catch {}
         }));
       } catch {}
     }));
+    clearTimeout(globalTimeout);
     const newGuids = Array.from(guids);
     if (newGuids.length !== bannedGuidsCache.guids.length) console.log(`[BAN-SYNC] ${newGuids.length} banned GUIDs`);
     bannedGuidsCache = { guids: newGuids, lastUpdated: Date.now(), syncing: false };
-  } catch (err) { console.error('[BAN-SYNC] Error:', err.message); bannedGuidsCache.syncing = false; }
+  } catch (err) { clearTimeout(globalTimeout); console.error('[BAN-SYNC] Error:', err.message); bannedGuidsCache.syncing = false; }
 }
 
 function startBannedGuidsSyncLoop() {
@@ -175,25 +177,33 @@ let bulkResponseCache = { data: null, timestamp: 0, generating: false };
 async function regenerateAllSessionsCache() {
   if (allSessionsCache.generating) return;
   allSessionsCache.generating = true;
-  try { allSessionsCache = { data: await db.getAllFinalizedSessions(), timestamp: Date.now(), generating: false }; }
-  catch (err) { console.error('[SESSIONS-CACHE] Error:', err.message); allSessionsCache.generating = false; }
+  try {
+    const data = await Promise.race([db.getAllFinalizedSessions(), new Promise((_, r) => setTimeout(() => r(new Error('Sessions cache timeout')), 20000))]);
+    allSessionsCache = { data, timestamp: Date.now(), generating: false };
+  } catch (err) { console.error('[SESSIONS-CACHE] Error:', err.message); allSessionsCache.generating = false; }
 }
 
 async function regenerateAllPlayersCache() {
   if (allPlayersCache.generating) return;
   allPlayersCache.generating = true;
-  try { allPlayersCache = { data: await db.getAllPlayers(), timestamp: Date.now(), generating: false }; }
-  catch (err) { console.error('[PLAYERS-CACHE] Error:', err.message); allPlayersCache.generating = false; }
+  try {
+    const data = await Promise.race([db.getAllPlayers(), new Promise((_, r) => setTimeout(() => r(new Error('Players cache timeout')), 20000))]);
+    allPlayersCache = { data, timestamp: Date.now(), generating: false };
+  } catch (err) { console.error('[PLAYERS-CACHE] Error:', err.message); allPlayersCache.generating = false; }
 }
 
 async function regenerateBulkCache() {
   if (bulkResponseCache.generating) return;
   bulkResponseCache.generating = true;
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Bulk cache timeout')), 10000));
   try {
-    const [players, sessions, servers, mmr, sr, records, stats, bannedGuids] = await Promise.all([
-      db.getAllPlayersSlim(), db.getRecentSessions(50), Promise.resolve(stateManager.getCachedServerData()),
-      db.getTopPlayersByMMR(100), db.getTopPlayersBySR(100), db.getAllTrackRecords(),
-      db.getTotalFinalizedSessionsCount().then(c => ({ totalRaces: c })), Promise.resolve(getAllBannedGuids())
+    const [players, sessions, servers, mmr, sr, records, stats, bannedGuids] = await Promise.race([
+      Promise.all([
+        db.getAllPlayersSlim(), db.getRecentSessions(50), Promise.resolve(stateManager.getCachedServerData()),
+        db.getTopPlayersByMMR(100), db.getTopPlayersBySR(100), db.getAllTrackRecords(),
+        db.getTotalFinalizedSessionsCount().then(c => ({ totalRaces: c })), Promise.resolve(getAllBannedGuids())
+      ]),
+      timeout
     ]);
     bulkResponseCache = { data: { players, sessions, servers, leaderboards: { mmr, sr }, records, stats, bannedGuids }, timestamp: Date.now(), generating: false };
   } catch (err) { console.error('[BULK-CACHE] Error:', err.message); bulkResponseCache.generating = false; }
@@ -202,7 +212,7 @@ async function regenerateBulkCache() {
 function startBulkCacheLoop() {
   console.log('[CACHE] Starting pre-generation loops');
   regenerateBulkCache(); regenerateAllSessionsCache(); regenerateAllPlayersCache();
-  setInterval(regenerateBulkCache, 3000);
+  setInterval(regenerateBulkCache, 5000);
   setInterval(regenerateAllSessionsCache, 30000);
   setInterval(regenerateAllPlayersCache, 30000);
 }
@@ -605,13 +615,18 @@ app.get('/api/support-tickets/my', requireAuth, async (req, res) => { try { res.
 
 function getApiSources() { return [{ id: 'manager1', url: env.MXBIKES_API_URL_1, key: env.MXBIKES_API_KEY_1 }, { id: 'manager2', url: env.MXBIKES_API_URL_2, key: env.MXBIKES_API_KEY_2 }].filter(s => s.url && s.key); }
 
-async function fetchFromManager(source, endpoint, method = 'GET', body = null) {
-  const opts = { method, headers: { 'X-API-Key': source.key, 'Content-Type': 'application/json' } };
-  if (body && method !== 'GET') opts.body = JSON.stringify(body);
-  const resp = await fetch(`${source.url}${endpoint}`, opts);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const text = await resp.text();
-  try { return JSON.parse(text); } catch { return { success: true, message: text }; }
+async function fetchFromManager(source, endpoint, method = 'GET', body = null, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const opts = { method, headers: { 'X-API-Key': source.key, 'Content-Type': 'application/json' }, signal: controller.signal };
+    if (body && method !== 'GET') opts.body = JSON.stringify(body);
+    const resp = await fetch(`${source.url}${endpoint}`, opts);
+    clearTimeout(timeout);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const text = await resp.text();
+    try { return JSON.parse(text); } catch { return { success: true, message: text }; }
+  } catch (err) { clearTimeout(timeout); throw err; }
 }
 
 async function proxyToManager(endpoint, method = 'GET', body = null) {
