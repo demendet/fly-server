@@ -3211,10 +3211,10 @@ app.post('/api/admin/ban', requireAuth, requireAdmin, async (req, res) => {
         console.error('[ADMIN] Failed to store ban history:', histErr.message);
       }
 
-      // Reduce safety rating by 15% when banned
+      // Reduce safety rating by 120 SR when banned
       try {
-        await db.reduceSafetyRating(banData.playerGuid, 0.15);
-        console.log(`[ADMIN] Safety rating reduced by 15% for ${banData.playerName}`);
+        await db.reduceSafetyRating(banData.playerGuid, 120);
+        console.log(`[ADMIN] Safety rating reduced by 120 SR for ${banData.playerName}`);
       } catch (srErr) {
         console.error('[ADMIN] Failed to reduce safety rating:', srErr.message);
       }
@@ -3388,10 +3388,10 @@ app.post('/api/admin/servers/:serverId/ban', requireAuth, requireAdmin, async (r
         evidenceUrl: banData.evidenceUrl || null
       });
 
-      // Reduce safety rating by 15% when banned
+      // Reduce safety rating by 120 SR when banned
       try {
-        await db.reduceSafetyRating(banData.playerGuid, 0.15);
-        console.log(`[ADMIN] Safety rating reduced by 15% for ${banData.playerName}`);
+        await db.reduceSafetyRating(banData.playerGuid, 120);
+        console.log(`[ADMIN] Safety rating reduced by 120 SR for ${banData.playerName}`);
       } catch (srErr) {
         console.error('[ADMIN] Failed to reduce safety rating:', srErr.message);
       }

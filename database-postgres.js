@@ -581,7 +581,7 @@ export class PostgresDatabaseManager {
       displayName,
       displayName.toLowerCase(),
       player.mmr || 1000,
-      player.safetyRating || 0.5,
+      player.safetyRating || 800,
       player.totalRaces || 0,
       player.wins || 0,
       player.podiums || 0,
@@ -626,7 +626,7 @@ export class PostgresDatabaseManager {
         displayNames.push(displayName);
         displayNamesLower.push(displayName.toLowerCase());
         mmrs.push(player.mmr || 1000);
-        safetyRatings.push(player.safetyRating || 0.5);
+        safetyRatings.push(player.safetyRating || 800);
         totalRaces.push(player.totalRaces || 0);
         wins.push(player.wins || 0);
         podiums.push(player.podiums || 0);
@@ -801,7 +801,7 @@ export class PostgresDatabaseManager {
     await this.pool.query(`
       UPDATE players SET
         mmr = GREATEST(0, mmr + $1),
-        "safetyRating" = LEAST(1.0, GREATEST(0.0, "safetyRating" + $2)),
+        "safetyRating" = GREATEST(0.0, "safetyRating" + $2),
         "totalRaces" = "totalRaces" + 1,
         wins = wins + $3,
         podiums = podiums + $4,
@@ -810,15 +810,15 @@ export class PostgresDatabaseManager {
     `, [mmrChange, srChange, won ? 1 : 0, podium ? 1 : 0, Date.now(), guid]);
   }
 
-  // Reduce safety rating by a percentage (e.g., 0.15 for 15%)
-  async reduceSafetyRating(guid, reduction = 0.15) {
+  // Reduce safety rating by points (e.g., 120 for ban penalty)
+  async reduceSafetyRating(guid, reduction = 120) {
     await this.pool.query(`
       UPDATE players SET
         "safetyRating" = GREATEST(0.0, "safetyRating" - $1),
         "updatedAt" = $2
       WHERE guid = $3
     `, [reduction, Date.now(), guid]);
-    console.log(`[POSTGRES] Reduced safety rating for ${guid} by ${reduction * 100}%`);
+    console.log(`[POSTGRES] Reduced safety rating for ${guid} by ${reduction} SR`);
   }
 
   calculateMMRChanges(raceResults) {
@@ -896,20 +896,21 @@ export class PostgresDatabaseManager {
   }
 
   _calculateSafetyRating(player) {
-    // SAFETY RATING SYSTEM v2.0
-    // Designed with 30% auto-ban threshold in mind
-    // Takes ~10-15 consistently reckless races to hit ban
-    // Takes ~10 clean races to recover from 30% to 50%
+    // SAFETY RATING SYSTEM v2.0 - POINTS-BASED (800 starting SR, 550 ban threshold)
+    // Players start at 800 SR (similar to MMR starting at 1000)
+    // Ban threshold: 550 SR (restricted to non-collision servers)
+    // Takes ~10-15 consistently reckless races to hit ban from 800 SR
+    // Takes ~10 clean races to recover from 550 to 700+
 
     // Base reward for completing the race
-    let srChange = 0.003; // 0.3% base completion bonus
+    let srChange = 3; // +3 SR base completion bonus
 
     // Check if player retired/DNF
     const didNotFinish = player.driverStatus === 'RET' || player.driverStatus === 'DNS' || player.driverStatus === 'DSQ';
     if (didNotFinish) {
       // Penalty for not finishing (quitting/giving up)
-      srChange = -0.015; // -1.5% for DNF/RET/DSQ
-      console.log(`[SR] ${player.playerName}: DNF penalty -1.5%`);
+      srChange = -12; // -12 SR for DNF/RET/DSQ
+      console.log(`[SR] ${player.playerName}: DNF penalty -12 SR`);
       return srChange;
     }
 
@@ -935,25 +936,25 @@ export class PostgresDatabaseManager {
         // Bike-to-bike contacts are MUCH more severe (dangerous racing)
         if (speed < 3) {
           lowSpeedBikeContacts++;
-          srChange -= 0.001; // -0.1% per gentle bike contact (racing incident)
+          srChange -= 1; // -1 SR per gentle bike contact (racing incident)
         } else if (speed < 8) {
           mediumSpeedBikeContacts++;
-          srChange -= 0.004; // -0.4% per medium bike collision
+          srChange -= 4; // -4 SR per medium bike collision
         } else {
           highSpeedBikeContacts++;
-          srChange -= 0.008; // -0.8% per dangerous high-speed bike collision
+          srChange -= 8; // -8 SR per dangerous high-speed bike collision
         }
       } else {
         // Wall contacts (less severe - only affects you)
         if (speed < 5) {
           lowSpeedWallContacts++;
-          srChange -= 0.0005; // -0.05% per scrub/minor wall touch
+          srChange -= 0.5; // -0.5 SR per scrub/minor wall touch
         } else if (speed < 15) {
           mediumSpeedWallContacts++;
-          srChange -= 0.0015; // -0.15% per wall crash
+          srChange -= 1.5; // -1.5 SR per wall crash
         } else {
           highSpeedWallContacts++;
-          srChange -= 0.0025; // -0.25% per big wall crash
+          srChange -= 2.5; // -2.5 SR per big wall crash
         }
       }
     }
@@ -961,32 +962,32 @@ export class PostgresDatabaseManager {
     // Clean lap bonus (rewards consistent clean racing)
     const majorIncidents = mediumSpeedWallContacts + highSpeedWallContacts + bikeContactsTotal;
     const estimatedCleanLaps = Math.max(0, totalLaps - majorIncidents);
-    const cleanLapBonus = estimatedCleanLaps * 0.0015; // +0.15% per clean lap
+    const cleanLapBonus = estimatedCleanLaps * 1.5; // +1.5 SR per clean lap
     srChange += cleanLapBonus;
 
     // Perfect race bonus (zero contacts, minimum 3 laps)
     if (contacts.length === 0 && totalLaps >= 3) {
-      srChange += 0.012; // +1.2% bonus for flawless performance
+      srChange += 10; // +10 SR bonus for flawless performance
     }
 
     // Invalid lap penalty (track cutting / shortcuts)
     const invalidLaps = player.invalidLaps || 0;
     if (invalidLaps > 0) {
-      srChange -= invalidLaps * 0.002; // -0.2% per invalid lap
+      srChange -= invalidLaps * 2; // -2 SR per invalid lap
     }
 
     // Time penalties (track cutting that resulted in time penalty)
     const penalties = player.penalties || [];
     const cuttingPenalties = penalties.filter(p => p.offence === 'CUTTING' || p.type === 'TIME');
     if (cuttingPenalties.length > 0) {
-      // Each time penalty for cutting = -0.3%
-      srChange -= cuttingPenalties.length * 0.003;
+      // Each time penalty for cutting = -3 SR
+      srChange -= cuttingPenalties.length * 3;
 
       // Additional penalty based on total time added
       const totalPenaltyTime = cuttingPenalties.reduce((sum, p) => sum + (p.penalty_time || 0), 0);
       if (totalPenaltyTime > 0) {
-        // -0.1% per 5 seconds of penalty time (so 15s = -0.3% extra)
-        const timePenalty = Math.floor(totalPenaltyTime / 5) * 0.001;
+        // -1 SR per 5 seconds of penalty time (so 15s = -3 SR extra)
+        const timePenalty = Math.floor(totalPenaltyTime / 5) * 1;
         srChange -= timePenalty;
       }
     }
@@ -994,20 +995,20 @@ export class PostgresDatabaseManager {
     // Jumpstart penalty (very serious - unfair advantage)
     const jumpstartPenalties = penalties.filter(p => p.offence === 'JUMPSTART');
     if (jumpstartPenalties.length > 0) {
-      srChange -= jumpstartPenalties.length * 0.01; // -1% per jumpstart
+      srChange -= jumpstartPenalties.length * 10; // -10 SR per jumpstart
     }
 
     // Special case: Serial crasher detection (10+ contacts in a race)
     if (contacts.length >= 10) {
       const excessContacts = contacts.length - 10;
-      srChange -= excessContacts * 0.001; // Additional -0.1% per contact over 10
+      srChange -= excessContacts * 1; // Additional -1 SR per contact over 10
       console.log(`[SR] ${player.playerName}: SERIAL CRASHER detected! ${contacts.length} contacts`);
     }
 
     // Cap safety rating change to prevent extreme swings
-    // Max gain: +2.0% per race (perfect race on long track)
-    // Max loss: -2.5% per race (extremely reckless)
-    srChange = Math.max(-0.025, Math.min(0.020, srChange));
+    // Max gain: +20 SR per race (perfect race on long track)
+    // Max loss: -25 SR per race (extremely reckless)
+    srChange = Math.max(-25, Math.min(20, srChange));
 
     // Detailed logging for transparency
     const totalWallContacts = lowSpeedWallContacts + mediumSpeedWallContacts + highSpeedWallContacts;
@@ -1020,7 +1021,7 @@ export class PostgresDatabaseManager {
       penaltyLog = ` | Penalties: ${totalPenalties} (${cuttingCount} cutting, ${jumpstartCount} jumpstart)`;
     }
 
-    console.log(`[SR] ${player.playerName}: SR ${(srChange * 100).toFixed(2)}% | Contacts: ${contacts.length} (${bikeContactsTotal} bike, ${totalWallContacts} wall) | Laps: ${totalLaps} (${estimatedCleanLaps} clean) | Invalid: ${invalidLaps}${penaltyLog}`);
+    console.log(`[SR] ${player.playerName}: SR ${srChange > 0 ? '+' : ''}${srChange.toFixed(1)} | Contacts: ${contacts.length} (${bikeContactsTotal} bike, ${totalWallContacts} wall) | Laps: ${totalLaps} (${estimatedCleanLaps} clean) | Invalid: ${invalidLaps}${penaltyLog}`);
 
     return srChange;
   }
@@ -1038,7 +1039,7 @@ export class PostgresDatabaseManager {
         await client.query(`
           UPDATE players SET
             mmr = GREATEST(0, mmr + $1),
-            "safetyRating" = LEAST(1.0, GREATEST(0.0, "safetyRating" + $2)),
+            "safetyRating" = GREATEST(0.0, "safetyRating" + $2),
             "totalRaces" = "totalRaces" + 1,
             wins = wins + $3,
             podiums = podiums + $4,
