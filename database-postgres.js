@@ -230,10 +230,11 @@ export class PostgresDatabaseManager {
           id TEXT PRIMARY KEY, "stripePaymentId" TEXT UNIQUE, "stripeCustomerId" TEXT,
           email TEXT, name TEXT, amount INTEGER NOT NULL, currency TEXT DEFAULT 'usd',
           status TEXT DEFAULT 'pending', message TEXT, "isAnonymous" BOOLEAN DEFAULT FALSE,
-          "createdAt" BIGINT NOT NULL
+          "playerGuid" TEXT, "playerName" TEXT, "createdAt" BIGINT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_donations_created ON donations("createdAt" DESC);
         CREATE INDEX IF NOT EXISTS idx_donations_status ON donations(status);
+        CREATE INDEX IF NOT EXISTS idx_donations_player ON donations("playerGuid");
       `);
       console.log('[DB] Tables initialized');
     } finally { client.release(); }
@@ -1122,7 +1123,7 @@ export class PostgresDatabaseManager {
 
   async createDonation(d) {
     const id = `donation_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    await this.pool.query(`INSERT INTO donations (id, "stripePaymentId", "stripeCustomerId", email, name, amount, currency, status, message, "isAnonymous", "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, [id, d.stripePaymentId || null, d.stripeCustomerId || null, d.email || null, d.name || null, d.amount, d.currency || 'usd', d.status || 'pending', d.message || null, d.isAnonymous || false, Date.now()]);
+    await this.pool.query(`INSERT INTO donations (id, "stripePaymentId", "stripeCustomerId", email, name, amount, currency, status, message, "isAnonymous", "playerGuid", "playerName", "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`, [id, d.stripePaymentId || null, d.stripeCustomerId || null, d.email || null, d.name || null, d.amount, d.currency || 'usd', d.status || 'pending', d.message || null, d.isAnonymous || false, d.playerGuid || null, d.playerName || null, Date.now()]);
     return id;
   }
 
@@ -1132,7 +1133,7 @@ export class PostgresDatabaseManager {
 
   async getAllDonations() {
     const result = await this.pool.query(`SELECT * FROM donations ORDER BY "createdAt" DESC`);
-    return result.rows.map(r => ({ id: r.id, stripePaymentId: r.stripePaymentId, stripeCustomerId: r.stripeCustomerId, email: r.email, name: r.name, amount: r.amount, currency: r.currency, status: r.status, message: r.message, isAnonymous: r.isAnonymous, createdAt: r.createdAt ? parseInt(r.createdAt) : null }));
+    return result.rows.map(r => ({ id: r.id, stripePaymentId: r.stripePaymentId, stripeCustomerId: r.stripeCustomerId, email: r.email, name: r.name, amount: r.amount, currency: r.currency, status: r.status, message: r.message, isAnonymous: r.isAnonymous, playerGuid: r.playerGuid, playerName: r.playerName, createdAt: r.createdAt ? parseInt(r.createdAt) : null }));
   }
 
   async getDonationStats() {

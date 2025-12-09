@@ -1016,7 +1016,7 @@ function stopAutomatedMessagesLoop() { if (autoMsgInterval) { clearInterval(auto
 app.post('/api/donations/create-checkout', async (req, res) => {
   try {
     if (!stripe) return res.status(503).json({ error: 'Payments not configured' });
-    const { amount, message, isAnonymous } = req.body;
+    const { amount, message, isAnonymous, playerGuid, playerName } = req.body;
     if (!amount || amount < 100) return res.status(400).json({ error: 'Minimum donation is $1' });
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card', 'link'],
@@ -1027,7 +1027,7 @@ app.post('/api/donations/create-checkout', async (req, res) => {
       mode: 'payment',
       success_url: `${req.headers.origin || 'https://cbrservers.com'}/support-us?success=true`,
       cancel_url: `${req.headers.origin || 'https://cbrservers.com'}/support-us?canceled=true`,
-      metadata: { message: message || '', isAnonymous: isAnonymous ? 'true' : 'false' }
+      metadata: { message: message || '', isAnonymous: isAnonymous ? 'true' : 'false', playerGuid: playerGuid || '', playerName: playerName || '' }
     });
     res.json({ sessionId: session.id, url: session.url });
   } catch (err) { console.error('[STRIPE] Checkout error:', err.message); res.status(500).json({ error: err.message }); }
@@ -1040,6 +1040,8 @@ app.post('/api/donations/webhook', express.raw({ type: 'application/json' }), as
     const event = stripe.webhooks.constructEvent(req.body, sig, env.STRIPE_WEBHOOK_SECRET);
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
+      const playerGuid = session.metadata?.playerGuid || null;
+      const playerName = session.metadata?.playerName || null;
       await db.createDonation({
         stripePaymentId: session.payment_intent,
         stripeCustomerId: session.customer,
@@ -1049,9 +1051,24 @@ app.post('/api/donations/webhook', express.raw({ type: 'application/json' }), as
         currency: session.currency,
         status: 'completed',
         message: session.metadata?.message || null,
-        isAnonymous: session.metadata?.isAnonymous === 'true'
+        isAnonymous: session.metadata?.isAnonymous === 'true',
+        playerGuid,
+        playerName
       });
-      console.log(`[STRIPE] Donation received: $${(session.amount_total / 100).toFixed(2)}`);
+      // Add to Firebase supporters collection if player was logged in
+      if (playerGuid && firebaseAdmin) {
+        try {
+          const firestore = firebaseAdmin.firestore();
+          await firestore.collection('supporters').doc(playerGuid.toUpperCase()).set({
+            name: playerName || session.customer_details?.name || 'Supporter',
+            totalDonated: firebaseAdmin.firestore.FieldValue.increment(session.amount_total),
+            lastDonation: Date.now(),
+            donationCount: firebaseAdmin.firestore.FieldValue.increment(1)
+          }, { merge: true });
+          console.log(`[STRIPE] Added ${playerName || playerGuid} to supporters`);
+        } catch (fbErr) { console.error('[STRIPE] Firebase supporter error:', fbErr.message); }
+      }
+      console.log(`[STRIPE] Donation received: $${(session.amount_total / 100).toFixed(2)}${playerGuid ? ` from ${playerName || playerGuid}` : ''}`);
     }
     res.json({ received: true });
   } catch (err) { console.error('[STRIPE] Webhook error:', err.message); res.status(400).send(`Webhook Error: ${err.message}`); }
