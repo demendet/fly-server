@@ -225,6 +225,16 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_automated_messages_enabled ON automated_messages("isEnabled");
         CREATE INDEX IF NOT EXISTS idx_automated_messages_server ON automated_messages("serverId");
       `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS donations (
+          id TEXT PRIMARY KEY, "stripePaymentId" TEXT UNIQUE, "stripeCustomerId" TEXT,
+          email TEXT, name TEXT, amount INTEGER NOT NULL, currency TEXT DEFAULT 'usd',
+          status TEXT DEFAULT 'pending', message TEXT, "isAnonymous" BOOLEAN DEFAULT FALSE,
+          "createdAt" BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_donations_created ON donations("createdAt" DESC);
+        CREATE INDEX IF NOT EXISTS idx_donations_status ON donations(status);
+      `);
       console.log('[DB] Tables initialized');
     } finally { client.release(); }
   }
@@ -1108,6 +1118,27 @@ export class PostgresDatabaseManager {
   async deleteAutomatedMessage(id) {
     const result = await this.pool.query(`DELETE FROM automated_messages WHERE id = $1 RETURNING id`, [id]);
     return result.rows.length > 0;
+  }
+
+  async createDonation(d) {
+    const id = `donation_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    await this.pool.query(`INSERT INTO donations (id, "stripePaymentId", "stripeCustomerId", email, name, amount, currency, status, message, "isAnonymous", "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, [id, d.stripePaymentId || null, d.stripeCustomerId || null, d.email || null, d.name || null, d.amount, d.currency || 'usd', d.status || 'pending', d.message || null, d.isAnonymous || false, Date.now()]);
+    return id;
+  }
+
+  async updateDonationStatus(stripePaymentId, status) {
+    await this.pool.query(`UPDATE donations SET status = $1 WHERE "stripePaymentId" = $2`, [status, stripePaymentId]);
+  }
+
+  async getAllDonations() {
+    const result = await this.pool.query(`SELECT * FROM donations ORDER BY "createdAt" DESC`);
+    return result.rows.map(r => ({ id: r.id, stripePaymentId: r.stripePaymentId, stripeCustomerId: r.stripeCustomerId, email: r.email, name: r.name, amount: r.amount, currency: r.currency, status: r.status, message: r.message, isAnonymous: r.isAnonymous, createdAt: r.createdAt ? parseInt(r.createdAt) : null }));
+  }
+
+  async getDonationStats() {
+    const result = await this.pool.query(`SELECT COUNT(*) as total, COALESCE(SUM(amount), 0) as "totalAmount", COUNT(CASE WHEN "createdAt" > $1 THEN 1 END) as "thisMonth", COALESCE(SUM(CASE WHEN "createdAt" > $1 THEN amount ELSE 0 END), 0) as "thisMonthAmount" FROM donations WHERE status = 'completed'`, [Date.now() - 30 * 24 * 60 * 60 * 1000]);
+    const r = result.rows[0];
+    return { totalDonations: parseInt(r.total), totalAmount: parseInt(r.totalAmount), thisMonthDonations: parseInt(r.thisMonth), thisMonthAmount: parseInt(r.thisMonthAmount) };
   }
 
   async close() { await this.pool.end(); console.log('[DB] Closed'); }

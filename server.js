@@ -62,7 +62,17 @@ const env = {
   MXBIKES_API_KEY_1: process.env.MXBIKES_API_KEY_1,
   MXBIKES_API_KEY_2: process.env.MXBIKES_API_KEY_2,
   STEAM_API_KEY: process.env.STEAM_API_KEY,
+  STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
+  STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
 };
+
+let stripe = null;
+if (env.STRIPE_SECRET_KEY) {
+  import('stripe').then(Stripe => {
+    stripe = new Stripe.default(env.STRIPE_SECRET_KEY);
+    console.log('[INIT] Stripe initialized');
+  }).catch(err => console.error('[INIT] Stripe error:', err.message));
+}
 
 function guidToSteam64(guid) {
   if (!guid || guid.length !== 18) return null;
@@ -996,6 +1006,58 @@ async function processAutomatedMessages() {
 
 function startAutomatedMessagesLoop() { if (autoMsgInterval) return; console.log('[AUTO-MSG] Starting (30s interval)'); processAutomatedMessages(); autoMsgInterval = setInterval(processAutomatedMessages, 30000); }
 function stopAutomatedMessagesLoop() { if (autoMsgInterval) { clearInterval(autoMsgInterval); autoMsgInterval = null; } }
+
+// Stripe donation endpoints
+app.post('/api/donations/create-checkout', async (req, res) => {
+  try {
+    if (!stripe) return res.status(503).json({ error: 'Payments not configured' });
+    const { amount, message, isAnonymous } = req.body;
+    if (!amount || amount < 100) return res.status(400).json({ error: 'Minimum donation is $1' });
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card', 'link'],
+      line_items: [{
+        price_data: { currency: 'usd', product_data: { name: 'Donation to CBR Servers', description: 'Thank you for supporting us' }, unit_amount: amount },
+        quantity: 1
+      }],
+      mode: 'payment',
+      success_url: `${req.headers.origin || 'https://cbrservers.com'}/support-us?success=true`,
+      cancel_url: `${req.headers.origin || 'https://cbrservers.com'}/support-us?canceled=true`,
+      metadata: { message: message || '', isAnonymous: isAnonymous ? 'true' : 'false' }
+    });
+    res.json({ sessionId: session.id, url: session.url });
+  } catch (err) { console.error('[STRIPE] Checkout error:', err.message); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/donations/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe || !env.STRIPE_WEBHOOK_SECRET) return res.status(503).send('Webhooks not configured');
+  const sig = req.headers['stripe-signature'];
+  try {
+    const event = stripe.webhooks.constructEvent(req.body, sig, env.STRIPE_WEBHOOK_SECRET);
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      await db.createDonation({
+        stripePaymentId: session.payment_intent,
+        stripeCustomerId: session.customer,
+        email: session.customer_details?.email,
+        name: session.customer_details?.name,
+        amount: session.amount_total,
+        currency: session.currency,
+        status: 'completed',
+        message: session.metadata?.message || null,
+        isAnonymous: session.metadata?.isAnonymous === 'true'
+      });
+      console.log(`[STRIPE] Donation received: $${(session.amount_total / 100).toFixed(2)}`);
+    }
+    res.json({ received: true });
+  } catch (err) { console.error('[STRIPE] Webhook error:', err.message); res.status(400).send(`Webhook Error: ${err.message}`); }
+});
+
+app.get('/api/admin/donations', requireAuth, requireRoot, async (req, res) => {
+  try {
+    const [donations, stats] = await Promise.all([db.getAllDonations(), db.getDonationStats()]);
+    res.json({ donations, stats });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.listen(PORT, async () => {
   console.log(`[SERVER] Running on port ${PORT}`);
