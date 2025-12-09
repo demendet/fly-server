@@ -145,7 +145,11 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
-app.use(express.json());
+app.use((req, res, next) => {
+  // Skip JSON parsing for Stripe webhook (needs raw body for signature verification)
+  if (req.path === '/api/donations/webhook') return next();
+  express.json()(req, res, next);
+});
 
 const rateLimitMap = new Map();
 setInterval(() => { const now = Date.now(); for (const [ip, d] of rateLimitMap) if (now - d.start > 120000) rateLimitMap.delete(ip); }, 300000);
@@ -155,6 +159,7 @@ app.use('/api/', (req, res, next) => {
   if (req.path.match(/^\/player\/[A-Za-z0-9]+$/) && req.method === 'GET') return next();
   if (req.path === '/leaderboards' && req.method === 'GET') return next();
   if (req.path.match(/^\/session\/[A-Za-z0-9_-]+$/) && req.method === 'GET') return next();
+  if (req.path === '/donations/webhook') return next(); // Stripe webhook - no origin check
   const origin = req.headers.origin || '', referer = req.headers.referer || '';
   const validOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
   const isTunneled = req.headers['cf-connecting-ip'] || req.headers['cf-ray'];
