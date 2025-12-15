@@ -574,6 +574,22 @@ export class PostgresDatabaseManager {
     });
   }
 
+  async getTotalLapsCount() {
+    return this._cached('totalLapsCount', async () => {
+      // Query the JSONB arrays to get accurate warmup vs race lap breakdown
+      const result = await this.pool.query(`
+        SELECT
+          COALESCE(SUM((SELECT SUM((elem->>'totalLaps')::int) FROM jsonb_array_elements("warmupResults") as elem)), 0) as warmup_laps,
+          COALESCE(SUM((SELECT SUM((elem->>'totalLaps')::int) FROM jsonb_array_elements("raceResults") as elem)), 0) as race_laps
+        FROM sessions
+        WHERE "raceFinalized" = TRUE
+      `);
+      const warmupLaps = parseInt(result.rows[0].warmup_laps) || 0;
+      const raceLaps = parseInt(result.rows[0].race_laps) || 0;
+      return { warmupLaps, raceLaps, totalLaps: warmupLaps + raceLaps };
+    });
+  }
+
   _rowToSession(r) {
     return { id: r.id, serverId: r.serverId, serverName: r.serverName, trackName: r.trackName, eventName: r.eventName, sessionType: r.sessionType, currentSessionPhase: r.currentSessionPhase, sessionState: r.sessionState, weatherConditions: r.weatherConditions, airTemperature: r.airTemperature, trackLength: r.trackLength, startTime: r.startTime ? parseInt(r.startTime) : null, endTime: r.endTime ? parseInt(r.endTime) : null, warmupResults: r.warmupResults || [], raceResults: r.raceResults || [], totalEntries: r.totalEntries, hasFinished: r.hasFinished, raceFinalized: r.raceFinalized, isActive: r.isActive, createdAt: r.createdAt ? parseInt(r.createdAt) : null };
   }

@@ -216,7 +216,8 @@ async function regenerateBulkCache() {
       Promise.all([
         db.getAllPlayersSlim(), db.getRecentSessions(50), Promise.resolve(stateManager.getCachedServerData()),
         db.getTopPlayersByMMR(100), db.getTopPlayersBySR(100), db.getAllTrackRecords(),
-        db.getTotalFinalizedSessionsCount().then(c => ({ totalRaces: c })), Promise.resolve(getAllBannedGuids())
+        Promise.all([db.getTotalFinalizedSessionsCount(), db.getTotalLapsCount()]).then(([races, laps]) => ({ totalRaces: races, ...laps })),
+        Promise.resolve(getAllBannedGuids())
       ]),
       timeout
     ]);
