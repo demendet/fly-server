@@ -182,6 +182,17 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements("createdAt" DESC);
       `);
       await client.query(`
+        CREATE TABLE IF NOT EXISTS polls (
+          id TEXT PRIMARY KEY, question TEXT NOT NULL, options JSONB NOT NULL DEFAULT '[]',
+          votes JSONB NOT NULL DEFAULT '{}', active BOOLEAN DEFAULT TRUE,
+          "createdBy" TEXT NOT NULL, "createdByName" TEXT,
+          "createdAt" BIGINT NOT NULL, "expiresAt" BIGINT NOT NULL,
+          "showResults" BOOLEAN DEFAULT FALSE
+        );
+        CREATE INDEX IF NOT EXISTS idx_polls_active ON polls(active) WHERE active = TRUE;
+        CREATE INDEX IF NOT EXISTS idx_polls_expires ON polls("expiresAt");
+      `);
+      await client.query(`
         CREATE TABLE IF NOT EXISTS feature_requests (
           id TEXT PRIMARY KEY, "requestIndex" SERIAL, title TEXT NOT NULL, description TEXT NOT NULL,
           type TEXT DEFAULT 'feature', status TEXT DEFAULT 'pending', "submittedBy" TEXT NOT NULL,
@@ -1026,6 +1037,107 @@ export class PostgresDatabaseManager {
   _rowToAnnouncement(r) {
     if (!r) return null;
     return { id: r.id, title: r.title, message: r.message, type: r.type, active: r.active, createdBy: r.createdBy, createdByName: r.createdByName, createdAt: r.createdAt ? parseInt(r.createdAt) : null, updatedAt: r.updatedAt ? parseInt(r.updatedAt) : null, expiresAt: r.expiresAt ? parseInt(r.expiresAt) : null };
+  }
+
+  // Poll methods
+  async createPoll(p) {
+    const id = `poll_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+    const result = await this.pool.query(
+      `INSERT INTO polls (id, question, options, votes, active, "createdBy", "createdByName", "createdAt", "expiresAt", "showResults")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [id, p.question, JSON.stringify(p.options), '{}', true, p.createdBy, p.createdByName || null, now, p.expiresAt, p.showResults || false]
+    );
+    return this._rowToPoll(result.rows[0]);
+  }
+
+  async getActivePolls() {
+    const now = Date.now();
+    const result = await this.pool.query(
+      `SELECT * FROM polls WHERE active = TRUE AND "expiresAt" > $1 ORDER BY "createdAt" DESC`,
+      [now]
+    );
+    return result.rows.map(r => this._rowToPoll(r));
+  }
+
+  async getExpiredPolls() {
+    const now = Date.now();
+    const result = await this.pool.query(
+      `SELECT * FROM polls WHERE "expiresAt" <= $1 ORDER BY "expiresAt" DESC LIMIT 50`,
+      [now]
+    );
+    return result.rows.map(r => this._rowToPoll(r));
+  }
+
+  async getAllPolls() {
+    const result = await this.pool.query(`SELECT * FROM polls ORDER BY "createdAt" DESC`);
+    return result.rows.map(r => this._rowToPoll(r));
+  }
+
+  async getPoll(id) {
+    const result = await this.pool.query('SELECT * FROM polls WHERE id = $1', [id]);
+    return result.rows.length ? this._rowToPoll(result.rows[0]) : null;
+  }
+
+  async votePoll(pollId, odg, optionIndex) {
+    // Get current poll
+    const poll = await this.getPoll(pollId);
+    if (!poll) return null;
+
+    // Check if expired
+    if (poll.expiresAt <= Date.now()) return { error: 'Poll has expired' };
+
+    // Update votes - each user can only vote once
+    const votes = poll.votes || {};
+    votes[odg] = optionIndex;
+
+    const result = await this.pool.query(
+      `UPDATE polls SET votes = $1 WHERE id = $2 RETURNING *`,
+      [JSON.stringify(votes), pollId]
+    );
+    return result.rows.length ? this._rowToPoll(result.rows[0]) : null;
+  }
+
+  async deletePoll(id) {
+    const result = await this.pool.query('DELETE FROM polls WHERE id = $1 RETURNING id', [id]);
+    return result.rows.length > 0;
+  }
+
+  async togglePollActive(id) {
+    const result = await this.pool.query(
+      `UPDATE polls SET active = NOT active WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    return result.rows.length ? this._rowToPoll(result.rows[0]) : null;
+  }
+
+  _rowToPoll(r) {
+    if (!r) return null;
+    const votes = typeof r.votes === 'string' ? JSON.parse(r.votes) : (r.votes || {});
+    const options = typeof r.options === 'string' ? JSON.parse(r.options) : (r.options || []);
+
+    // Calculate vote counts per option
+    const voteCounts = options.map(() => 0);
+    Object.values(votes).forEach(optIdx => {
+      if (optIdx >= 0 && optIdx < voteCounts.length) voteCounts[optIdx]++;
+    });
+    const totalVotes = Object.keys(votes).length;
+
+    return {
+      id: r.id,
+      question: r.question,
+      options,
+      votes,
+      voteCounts,
+      totalVotes,
+      active: r.active,
+      createdBy: r.createdBy,
+      createdByName: r.createdByName,
+      createdAt: r.createdAt ? parseInt(r.createdAt) : null,
+      expiresAt: r.expiresAt ? parseInt(r.expiresAt) : null,
+      showResults: r.showResults,
+      isExpired: r.expiresAt ? parseInt(r.expiresAt) <= Date.now() : false
+    };
   }
 
   async getAllFeatureRequests() {
