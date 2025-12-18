@@ -306,6 +306,44 @@ app.get('/api/sessions', async (req, res) => { try { res.json(await db.getRecent
 app.get('/api/session/:sessionId', async (req, res) => { try { const s = await db.getSession(req.params.sessionId); s ? res.json(s) : res.status(404).json({ error: 'Not found' }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/sessions/player/:playerGuid', async (req, res) => { try { res.json(await db.searchSessionsByPlayer(req.params.playerGuid, parseInt(req.query.limit) || 100)); } catch (err) { res.status(500).json({ error: err.message }); } });
 
+// Paginated sessions endpoint - returns only current page + total count for stats
+app.get('/api/sessions/page/:page', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.params.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 25));
+    const [sessions, totalCount] = await Promise.all([
+      db.getSessionsPage(page, limit),
+      db.getTotalFinalizedSessionsCount()
+    ]);
+    res.json({
+      sessions,
+      totalCount,
+      page,
+      limit,
+      totalPages: Math.ceil(totalCount / limit)
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Cursor-based pagination - FASTEST, O(1) for any depth
+// Use ?cursor=<startTime> for next page, omit for first page
+app.get('/api/sessions/cursor', async (req, res) => {
+  try {
+    const cursor = req.query.cursor ? parseInt(req.query.cursor) : null;
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 25));
+    const [result, totalCount] = await Promise.all([
+      db.getSessionsCursor(cursor, limit),
+      db.getTotalFinalizedSessionsCount()
+    ]);
+    res.json({
+      sessions: result.sessions,
+      nextCursor: result.nextCursor,
+      totalCount,
+      hasMore: result.nextCursor !== null
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/player/:guid', async (req, res) => {
   try {
     const result = await db.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "steamAvatarUrl" FROM players WHERE guid = $1', [req.params.guid.toUpperCase()]);

@@ -547,9 +547,8 @@ export class PostgresDatabaseManager {
     return result.rows.filter(r => { if (seen.has(r.id)) return false; seen.add(r.id); return true; }).map(r => this._rowToSession(r));
   }
 
-  async getAllFinalizedSessions(limit = 500) {
-    // Add limit to prevent slow queries as session count grows
-    // Use a more efficient query with proper index usage
+  async getAllFinalizedSessions(limit = 100) {
+    // Default to 100 for backwards compatibility, used by cache regeneration
     const result = await this.pool.query(`
       SELECT * FROM sessions
       WHERE ("raceFinalized" = TRUE AND "totalEntries" > 0) OR "isActive" = TRUE
@@ -557,6 +556,42 @@ export class PostgresDatabaseManager {
       LIMIT $1
     `, [limit]);
     return result.rows.map(r => this._rowToSession(r));
+  }
+
+  async getSessionsPage(page = 1, limit = 25) {
+    // Server-side pagination - only fetch what's needed for current page
+    const offset = (page - 1) * limit;
+    const result = await this.pool.query(`
+      SELECT * FROM sessions
+      WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
+      ORDER BY "startTime" DESC
+      LIMIT $1 OFFSET $2
+    `, [limit, offset]);
+    return result.rows.map(r => this._rowToSession(r));
+  }
+
+  async getSessionsCursor(cursor = null, limit = 25) {
+    // Cursor-based pagination - O(1) performance regardless of page depth
+    // cursor is the startTime of the last session from previous page
+    let result;
+    if (cursor) {
+      result = await this.pool.query(`
+        SELECT * FROM sessions
+        WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 AND "startTime" < $1
+        ORDER BY "startTime" DESC
+        LIMIT $2
+      `, [cursor, limit]);
+    } else {
+      result = await this.pool.query(`
+        SELECT * FROM sessions
+        WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
+        ORDER BY "startTime" DESC
+        LIMIT $1
+      `, [limit]);
+    }
+    const sessions = result.rows.map(r => this._rowToSession(r));
+    const nextCursor = sessions.length === limit ? sessions[sessions.length - 1].startTime : null;
+    return { sessions, nextCursor };
   }
 
   async searchSessionsByPlayer(guid, limit = 100) {
