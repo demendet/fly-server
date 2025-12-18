@@ -547,8 +547,15 @@ export class PostgresDatabaseManager {
     return result.rows.filter(r => { if (seen.has(r.id)) return false; seen.add(r.id); return true; }).map(r => this._rowToSession(r));
   }
 
-  async getAllFinalizedSessions() {
-    const result = await this.pool.query(`SELECT * FROM sessions WHERE ("raceFinalized" = TRUE AND "totalEntries" > 0) OR "isActive" = TRUE ORDER BY "startTime" DESC`);
+  async getAllFinalizedSessions(limit = 500) {
+    // Add limit to prevent slow queries as session count grows
+    // Use a more efficient query with proper index usage
+    const result = await this.pool.query(`
+      SELECT * FROM sessions
+      WHERE ("raceFinalized" = TRUE AND "totalEntries" > 0) OR "isActive" = TRUE
+      ORDER BY "startTime" DESC
+      LIMIT $1
+    `, [limit]);
     return result.rows.map(r => this._rowToSession(r));
   }
 

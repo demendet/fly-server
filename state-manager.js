@@ -18,6 +18,10 @@ export class StateManager {
     this.cachedServerData = null;
     this.lastServerDataFetch = 0;
     this.alarmCounter = 0;
+    // Track sessions being processed to prevent race conditions
+    this.processingRaceSessions = new Set();
+    // Store last warmup results for sessions to ensure they're saved before transition
+    this.lastWarmupResults = new Map();
   }
 
   async recoverStateFromDatabase() {
@@ -45,7 +49,8 @@ export class StateManager {
     const ac = new AbortController();
     this.currentAbortController = ac;
     try { setMaxListeners(50, ac.signal); } catch {}
-    const timeout = setTimeout(() => { console.error(`[Update] TIMEOUT #${cycleId}`); ac.abort(); }, 30000);
+    // Increased from 30s to 45s to handle busy periods with many servers
+    const timeout = setTimeout(() => { console.error(`[Update] TIMEOUT #${cycleId}`); ac.abort(); }, 45000);
     try { await this._runUpdateCycleInternal(ac.signal, cycleId); }
     catch (e) { if (e.name !== 'AbortError') console.error('[Update] Error:', e.message); }
     finally { clearTimeout(timeout); if (this.activeCycleId === cycleId) this.activeCycleId = null; this.currentAbortController = null; }
@@ -149,6 +154,10 @@ export class StateManager {
               const leader = arr[0]?.best_lap?.time || arr[0]?.best_lap_time || 0;
               return { playerGuid: r.guid.toUpperCase(), playerName: r.name, position: i + 1, bestLapTime: best, totalLaps: r.total_laps || 0, raceNumber: r.race_number, bikeName: r.bike_name || r.bike_short_name || '', gap: i > 0 ? best - leader : 0, driverStatus: r.driver_status || null, holeshotTime: r.holeshot_time || null, penalties: r.penalties || [] };
             });
+          // ALWAYS store the latest warmup results so we can save them on phase transition
+          if (results.length > 0) {
+            this.lastWarmupResults.set(sid, results);
+          }
           const cached = this.cachedWarmupStates.get(sid);
           let changed = !cached || cached.size !== results.length;
           if (!changed) for (const r of results) { const c = cached.get(r.playerGuid); if (!c || c.pos !== r.position || c.time !== r.bestLapTime || c.laps !== r.totalLaps) { changed = true; break; } }
@@ -216,14 +225,45 @@ export class StateManager {
     if (wasWarmup && isRace) {
       check();
       const sid = this.serverSessions.get(srv.id);
-      if (sid) { await this.db.updateSession(sid, { currentSessionPhase: phase }); this.serverSessionPhases.set(srv.id, phase); console.log(`[SESSION] ${sid} warmup -> race`); }
+      if (sid) {
+        // CRITICAL: Save the final warmup results before transitioning to race phase
+        // This ensures warmup results are always preserved even if we didn't catch the last INPROGRESS state
+        const lastWarmup = this.lastWarmupResults.get(sid);
+        if (lastWarmup && lastWarmup.length > 0) {
+          await this.db.updateSession(sid, { warmupResults: lastWarmup, totalEntries: lastWarmup.length, currentSessionPhase: phase });
+          console.log(`[SESSION] ${sid} warmup -> race (saved ${lastWarmup.length} warmup results)`);
+        } else {
+          await this.db.updateSession(sid, { currentSessionPhase: phase });
+          console.log(`[SESSION] ${sid} warmup -> race (no warmup results to save)`);
+        }
+        this.serverSessionPhases.set(srv.id, phase);
+        // Keep lastWarmupResults for reference until session finalization
+      }
       return;
     }
     if (state === 'RACEOVER' && isRace) {
       const sid = this.serverSessions.get(srv.id);
       if (!sid || this.mmrSentSessions.has(sid)) return;
+      // Mark session as being processed to prevent race conditions with finalization
+      this.processingRaceSessions.add(sid);
       this.mmrSentSessions.add(sid);
-      this._processRaceOverAsync(srv, sid).catch(e => { console.error(`[RACEOVER] Error ${sid}:`, e.message); this.mmrSentSessions.delete(sid); });
+      // Process race results - await to prevent race condition with finalization
+      try {
+        await this._processRaceOverAsync(srv, sid);
+      } catch (e) {
+        console.error(`[RACEOVER] Error ${sid}:`, e.message);
+        // Only remove mmrSentSessions marker if we truly failed - allows retry on next cycle
+        // But check if we already wrote results to DB first
+        const session = await this.db.getSession(sid);
+        if (!session?.raceResults?.length) {
+          this.mmrSentSessions.delete(sid);
+          console.log(`[RACEOVER] ${sid} - will retry on next cycle`);
+        } else {
+          console.log(`[RACEOVER] ${sid} - results already saved, marking finalized`);
+        }
+      } finally {
+        this.processingRaceSessions.delete(sid);
+      }
       return;
     }
     const isUnknown = state === 'UNKNOWN' || state === '--' || !state;
@@ -233,7 +273,21 @@ export class StateManager {
       check();
       const sid = this.serverSessions.get(srv.id);
       if (!sid) return;
-      const hasResults = this.mmrSentSessions.has(sid);
+      // CRITICAL: Wait for any in-progress race processing to complete first
+      if (this.processingRaceSessions.has(sid)) {
+        console.log(`[FINALIZE] ${sid} - waiting for race processing to complete...`);
+        // Wait up to 10 seconds for race processing to complete
+        const waitStart = Date.now();
+        while (this.processingRaceSessions.has(sid) && (Date.now() - waitStart) < 10000) {
+          await new Promise(r => setTimeout(r, 250));
+        }
+        if (this.processingRaceSessions.has(sid)) {
+          console.warn(`[FINALIZE] ${sid} - race processing timed out, finalizing anyway`);
+        }
+      }
+      // Check DB state to determine if race was finalized (more reliable than in-memory set)
+      const session = await this.db.getSession(sid);
+      const hasResults = (session?.raceResults?.length > 0) || this.mmrSentSessions.has(sid);
       await this.db.updateSession(sid, { hasFinished: true, raceFinalized: hasResults, isActive: false, endTime: Date.now() });
       this.serverSessions.delete(srv.id);
       this.serverSessionPhases.delete(srv.id);
@@ -241,6 +295,7 @@ export class StateManager {
       this.insertedHoleshots.delete(sid);
       this.insertedContacts.delete(sid);
       this.cachedWarmupStates.delete(sid);
+      this.lastWarmupResults.delete(sid);  // Clean up warmup results cache
       console.log(`[FINALIZE] ${sid} - raceFinalized: ${hasResults}`);
       if (wasRace && isWarmup && state === 'INPROGRESS') {
         check();
