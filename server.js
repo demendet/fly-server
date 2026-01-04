@@ -1004,15 +1004,18 @@ async function flushAnalyticsToFirestore() {
   if (!firebaseAdmin || (!analyticsCache.pageViews.length && !analyticsCache.sessions.size)) return;
   try {
     const fs = firebaseAdmin.firestore();
-    const batch = fs.batch();
     const today = new Date().toISOString().split('T')[0];
-    const dailyRef = fs.collection('analytics_daily').doc(today);
-    const dailyDoc = await dailyRef.get();
+
+    // Get current daily doc and all-time totals
+    const [dailyDoc, totalsDoc] = await Promise.all([
+      fs.collection('analytics_daily').doc(today).get(),
+      fs.collection('analytics_totals').doc('summary').get()
+    ]);
+
     let d = dailyDoc.exists ? dailyDoc.data() : {
       date: today, uniqueVisitors: 0, pageViews: 0, visitors: [],
       pageViewsByPage: {}, deviceBreakdown: { desktop: 0, mobile: 0, tablet: 0 },
       hourlyActivity: Array(24).fill(0),
-      // New real tracking fields
       totalSessionDuration: 0, sessionCount: 0, bounceCount: 0, newVisitorCount: 0
     };
     if (!d.hourlyActivity) d.hourlyActivity = Array(24).fill(0);
@@ -1021,17 +1024,25 @@ async function flushAnalyticsToFirestore() {
     if (!d.bounceCount) d.bounceCount = 0;
     if (!d.newVisitorCount) d.newVisitorCount = 0;
 
-    const visitors = new Set(d.visitors || []);
-    const existingVisitors = new Set(d.visitors || []);
+    // Get all-time visitor set for checking truly new visitors
+    const totalsData = totalsDoc.exists ? totalsDoc.data() : { allTimeVisitors: [], totalPageViews: 0, totalUniqueVisitors: 0 };
+    const allTimeVisitors = new Set(totalsData.allTimeVisitors || []);
+    const todayVisitors = new Set(d.visitors || []);
+
+    let newAllTimeVisitors = 0;
 
     // Process page views
     for (const pv of analyticsCache.pageViews) {
       d.pageViews++;
-      if (!visitors.has(pv.visitorId)) {
-        visitors.add(pv.visitorId);
+      if (!todayVisitors.has(pv.visitorId)) {
+        todayVisitors.add(pv.visitorId);
         d.uniqueVisitors++;
-        // Check if truly new visitor (not seen before today)
-        if (!existingVisitors.has(pv.visitorId)) d.newVisitorCount++;
+      }
+      // Check if truly NEW visitor (never seen before in all time)
+      if (!allTimeVisitors.has(pv.visitorId)) {
+        allTimeVisitors.add(pv.visitorId);
+        d.newVisitorCount++;
+        newAllTimeVisitors++;
       }
       d.pageViewsByPage[pv.page] = (d.pageViewsByPage[pv.page] || 0) + 1;
       if (pv.deviceType && d.deviceBreakdown[pv.deviceType] !== undefined) d.deviceBreakdown[pv.deviceType]++;
@@ -1043,21 +1054,30 @@ async function flushAnalyticsToFirestore() {
     const now = Date.now();
     for (const [sessionId, session] of analyticsCache.sessions) {
       const endTime = session.endTime || now;
-      const duration = Math.round((endTime - session.startTime) / 1000); // in seconds
-      if (duration > 0 && duration < 3600) { // Only count sessions < 1 hour
+      const duration = Math.round((endTime - session.startTime) / 1000);
+      if (duration > 0 && duration < 3600) {
         d.totalSessionDuration += duration;
         d.sessionCount++;
-        if (session.pages.size <= 1) d.bounceCount++; // Bounce = only 1 page viewed
+        if (session.pages.size <= 1) d.bounceCount++;
       }
     }
 
-    d.visitors = Array.from(visitors);
+    d.visitors = Array.from(todayVisitors);
     d.lastUpdated = new Date().toISOString();
-    batch.set(dailyRef, d, { merge: true });
-    batch.set(fs.collection('analytics_totals').doc('summary'), {
-      totalPageViews: admin.firestore.FieldValue.increment(analyticsCache.pageViews.length),
+
+    // Use batch to update both docs
+    const batch = fs.batch();
+    batch.set(fs.collection('analytics_daily').doc(today), d, { merge: true });
+
+    // Update all-time totals with REAL counts
+    const newTotals = {
+      totalPageViews: (totalsData.totalPageViews || 0) + analyticsCache.pageViews.length,
+      totalUniqueVisitors: allTimeVisitors.size,
+      allTimeVisitors: Array.from(allTimeVisitors),
       lastUpdated: new Date().toISOString()
-    }, { merge: true });
+    };
+    batch.set(fs.collection('analytics_totals').doc('summary'), newTotals);
+
     await batch.commit();
 
     analyticsCache.pageViews = [];
@@ -1108,11 +1128,17 @@ app.get('/api/admin/analytics', requireAuth, requireAdmin, async (req, res) => {
     const todayDoc = await fs.collection('analytics_daily').doc(today).get();
     const todayData = todayDoc.exists ? todayDoc.data() : { uniqueVisitors: 0, pageViews: 0 };
     const totalsDoc = await fs.collection('analytics_totals').doc('summary').get();
-    const totalsData = totalsDoc.exists ? totalsDoc.data() : { totalPageViews: 0 };
+    const totalsData = totalsDoc.exists ? totalsDoc.data() : { totalPageViews: 0, totalUniqueVisitors: 0 };
 
     // Calculate real averages
-    const avgSessionDuration = totalSessionCount > 0 ? Math.round(totalSessionDuration / totalSessionCount) : 120;
-    const bounceRate = totalSessionCount > 0 ? Math.round((totalBounceCount / totalSessionCount) * 100) : 30;
+    const avgSessionDuration = totalSessionCount > 0 ? Math.round(totalSessionDuration / totalSessionCount) : 0;
+    const bounceRate = totalSessionCount > 0 ? Math.round((totalBounceCount / totalSessionCount) * 100) : 0;
+
+    // All-time totals from the totals doc (not date-range limited)
+    const allTimeVisitors = totalsData.totalUniqueVisitors || allVisitors.size;
+    const allTimePageViews = totalsData.totalPageViews || totalPageViews;
+
+    // Returning = all visitors in this range minus new visitors in this range
     const returningVisitors = Math.max(0, allVisitors.size - totalNewVisitors);
 
     res.json({
@@ -1121,9 +1147,11 @@ app.get('/api/admin/analytics', requireAuth, requireAdmin, async (req, res) => {
       deviceBreakdown,
       hourlyActivity: hourlyActivity.map((v, h) => ({ hour: h, visitors: v })),
       summary: {
-        totalVisitors: allVisitors.size,
+        totalVisitors: allTimeVisitors,           // ALL-TIME unique visitors
+        totalPageViews: allTimePageViews,         // ALL-TIME page views
         todayVisitors: todayData.uniqueVisitors || 0,
-        totalPageViews: totalsData.totalPageViews || totalPageViews,
+        periodVisitors: allVisitors.size,         // Visitors in selected period
+        periodPageViews: totalPageViews,          // Page views in selected period
         activeNow: analyticsCache.activeVisitors.size,
         avgSessionDuration,
         bounceRate,
