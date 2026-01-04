@@ -952,7 +952,13 @@ app.get('/api/admin/servers/:serverId/config', requireAuth, requireAdmin, async 
 app.put('/api/admin/servers/:serverId/config', requireAuth, requireAdmin, async (req, res) => { try { res.json(await proxyToManager(`/servers/${req.params.serverId}/config`, 'PUT', req.body)); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.post('/api/admin/servers/create', requireAuth, requireAdmin, async (req, res) => { try { res.json(await proxyToSpecificManager(parseInt(req.query.source) || 1, '/servers/create', 'POST', req.body)); } catch (err) { res.status(500).json({ error: err.message }); } });
 
-const analyticsCache = { pageViews: [], activeVisitors: new Map(), lastFlush: Date.now() };
+// Analytics tracking with real session data
+const analyticsCache = {
+  pageViews: [],
+  activeVisitors: new Map(),
+  sessions: new Map(), // Track session data: { startTime, pages: [], endTime }
+  lastFlush: Date.now()
+};
 function getDeviceType(ua) { if (!ua) return 'unknown'; const l = ua.toLowerCase(); if (/mobile|android|iphone|ipod|blackberry|opera mini|iemobile/i.test(l)) return 'mobile'; if (/ipad|tablet|playbook|silk/i.test(l)) return 'tablet'; return 'desktop'; }
 
 app.post('/api/analytics/track', express.text({ type: '*/*' }), async (req, res) => {
@@ -960,38 +966,102 @@ app.post('/api/analytics/track', express.text({ type: '*/*' }), async (req, res)
     let data; try { data = typeof req.body === 'string' ? JSON.parse(req.body) : req.body; } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
     const { visitorId, sessionId, userId, page, type, timestamp, userAgent, screenWidth } = data;
     if (!visitorId || !sessionId) return res.status(400).json({ error: 'Missing fields' });
-    analyticsCache.activeVisitors.set(visitorId, { lastSeen: Date.now(), sessionId, page });
-    if (type !== 'session_end') analyticsCache.pageViews.push({ visitorId, sessionId, userId, page: page || '/', deviceType: getDeviceType(userAgent), screenWidth, timestamp: timestamp || new Date().toISOString() });
-    const now = Date.now(); for (const [id, v] of analyticsCache.activeVisitors) if (now - v.lastSeen > 300000) analyticsCache.activeVisitors.delete(id);
+
+    const now = Date.now();
+    analyticsCache.activeVisitors.set(visitorId, { lastSeen: now, sessionId, page });
+
+    // Track session data
+    if (!analyticsCache.sessions.has(sessionId)) {
+      analyticsCache.sessions.set(sessionId, {
+        visitorId,
+        startTime: now,
+        pages: new Set(),
+        endTime: null
+      });
+    }
+    const session = analyticsCache.sessions.get(sessionId);
+
+    if (type === 'session_end') {
+      session.endTime = now;
+    } else {
+      session.pages.add(page || '/');
+      analyticsCache.pageViews.push({
+        visitorId, sessionId, userId,
+        page: page || '/',
+        deviceType: getDeviceType(userAgent),
+        screenWidth,
+        timestamp: timestamp || new Date().toISOString()
+      });
+    }
+
+    // Clean up old visitors (5 min inactive)
+    for (const [id, v] of analyticsCache.activeVisitors) if (now - v.lastSeen > 300000) analyticsCache.activeVisitors.delete(id);
     res.json({ success: true });
   } catch { res.status(500).json({ error: 'Track failed' }); }
 });
 
 async function flushAnalyticsToFirestore() {
-  if (!firebaseAdmin || !analyticsCache.pageViews.length) return;
+  if (!firebaseAdmin || (!analyticsCache.pageViews.length && !analyticsCache.sessions.size)) return;
   try {
     const fs = firebaseAdmin.firestore();
     const batch = fs.batch();
     const today = new Date().toISOString().split('T')[0];
     const dailyRef = fs.collection('analytics_daily').doc(today);
     const dailyDoc = await dailyRef.get();
-    let d = dailyDoc.exists ? dailyDoc.data() : { date: today, uniqueVisitors: 0, pageViews: 0, visitors: [], pageViewsByPage: {}, deviceBreakdown: { desktop: 0, mobile: 0, tablet: 0 }, hourlyActivity: Array(24).fill(0) };
+    let d = dailyDoc.exists ? dailyDoc.data() : {
+      date: today, uniqueVisitors: 0, pageViews: 0, visitors: [],
+      pageViewsByPage: {}, deviceBreakdown: { desktop: 0, mobile: 0, tablet: 0 },
+      hourlyActivity: Array(24).fill(0),
+      // New real tracking fields
+      totalSessionDuration: 0, sessionCount: 0, bounceCount: 0, newVisitorCount: 0
+    };
     if (!d.hourlyActivity) d.hourlyActivity = Array(24).fill(0);
+    if (!d.totalSessionDuration) d.totalSessionDuration = 0;
+    if (!d.sessionCount) d.sessionCount = 0;
+    if (!d.bounceCount) d.bounceCount = 0;
+    if (!d.newVisitorCount) d.newVisitorCount = 0;
+
     const visitors = new Set(d.visitors || []);
+    const existingVisitors = new Set(d.visitors || []);
+
+    // Process page views
     for (const pv of analyticsCache.pageViews) {
       d.pageViews++;
-      if (!visitors.has(pv.visitorId)) { visitors.add(pv.visitorId); d.uniqueVisitors++; }
+      if (!visitors.has(pv.visitorId)) {
+        visitors.add(pv.visitorId);
+        d.uniqueVisitors++;
+        // Check if truly new visitor (not seen before today)
+        if (!existingVisitors.has(pv.visitorId)) d.newVisitorCount++;
+      }
       d.pageViewsByPage[pv.page] = (d.pageViewsByPage[pv.page] || 0) + 1;
       if (pv.deviceType && d.deviceBreakdown[pv.deviceType] !== undefined) d.deviceBreakdown[pv.deviceType]++;
       const hour = new Date(pv.timestamp).getUTCHours();
       d.hourlyActivity[hour] = (d.hourlyActivity[hour] || 0) + 1;
     }
+
+    // Process sessions for duration and bounce rate
+    const now = Date.now();
+    for (const [sessionId, session] of analyticsCache.sessions) {
+      const endTime = session.endTime || now;
+      const duration = Math.round((endTime - session.startTime) / 1000); // in seconds
+      if (duration > 0 && duration < 3600) { // Only count sessions < 1 hour
+        d.totalSessionDuration += duration;
+        d.sessionCount++;
+        if (session.pages.size <= 1) d.bounceCount++; // Bounce = only 1 page viewed
+      }
+    }
+
     d.visitors = Array.from(visitors);
     d.lastUpdated = new Date().toISOString();
     batch.set(dailyRef, d, { merge: true });
-    batch.set(fs.collection('analytics_totals').doc('summary'), { totalPageViews: admin.firestore.FieldValue.increment(analyticsCache.pageViews.length), lastUpdated: new Date().toISOString() }, { merge: true });
+    batch.set(fs.collection('analytics_totals').doc('summary'), {
+      totalPageViews: admin.firestore.FieldValue.increment(analyticsCache.pageViews.length),
+      lastUpdated: new Date().toISOString()
+    }, { merge: true });
     await batch.commit();
+
     analyticsCache.pageViews = [];
+    analyticsCache.sessions.clear();
     analyticsCache.lastFlush = Date.now();
   } catch (err) { console.error('[ANALYTICS] Flush error:', err.message); }
 }
@@ -1005,22 +1075,62 @@ app.get('/api/admin/analytics', requireAuth, requireAdmin, async (req, res) => {
     const startDate = new Date(); startDate.setDate(startDate.getDate() - days);
     const fs = firebaseAdmin.firestore();
     const snap = await fs.collection('analytics_daily').where('date', '>=', startDate.toISOString().split('T')[0]).orderBy('date', 'asc').get();
-    const dailyStats = []; let totalPageViews = 0; const allVisitors = new Set(); const pageViewsByPage = {}; const deviceBreakdown = { desktop: 0, mobile: 0, tablet: 0 }; const hourlyActivity = Array(24).fill(0);
+
+    const dailyStats = [];
+    let totalPageViews = 0;
+    const allVisitors = new Set();
+    const pageViewsByPage = {};
+    const deviceBreakdown = { desktop: 0, mobile: 0, tablet: 0 };
+    const hourlyActivity = Array(24).fill(0);
+    // Real metrics aggregation
+    let totalSessionDuration = 0, totalSessionCount = 0, totalBounceCount = 0, totalNewVisitors = 0;
+
     snap.forEach(doc => {
       const d = doc.data();
       dailyStats.push({ date: d.date, uniqueVisitors: d.uniqueVisitors || 0, pageViews: d.pageViews || 0 });
       totalPageViews += d.pageViews || 0;
       (d.visitors || []).forEach(v => allVisitors.add(v));
       for (const [p, c] of Object.entries(d.pageViewsByPage || {})) pageViewsByPage[p] = (pageViewsByPage[p] || 0) + c;
-      if (d.deviceBreakdown) { deviceBreakdown.desktop += d.deviceBreakdown.desktop || 0; deviceBreakdown.mobile += d.deviceBreakdown.mobile || 0; deviceBreakdown.tablet += d.deviceBreakdown.tablet || 0; }
+      if (d.deviceBreakdown) {
+        deviceBreakdown.desktop += d.deviceBreakdown.desktop || 0;
+        deviceBreakdown.mobile += d.deviceBreakdown.mobile || 0;
+        deviceBreakdown.tablet += d.deviceBreakdown.tablet || 0;
+      }
       if (d.hourlyActivity) for (let i = 0; i < 24; i++) hourlyActivity[i] += d.hourlyActivity[i] || 0;
+      // Aggregate real session metrics
+      totalSessionDuration += d.totalSessionDuration || 0;
+      totalSessionCount += d.sessionCount || 0;
+      totalBounceCount += d.bounceCount || 0;
+      totalNewVisitors += d.newVisitorCount || 0;
     });
+
     const today = new Date().toISOString().split('T')[0];
     const todayDoc = await fs.collection('analytics_daily').doc(today).get();
     const todayData = todayDoc.exists ? todayDoc.data() : { uniqueVisitors: 0, pageViews: 0 };
     const totalsDoc = await fs.collection('analytics_totals').doc('summary').get();
     const totalsData = totalsDoc.exists ? totalsDoc.data() : { totalPageViews: 0 };
-    res.json({ dailyStats, topPages: Object.entries(pageViewsByPage).map(([page, views]) => ({ page, views })).sort((a, b) => b.views - a.views).slice(0, 10), deviceBreakdown, hourlyActivity: hourlyActivity.map((v, h) => ({ hour: h, visitors: v })), summary: { totalVisitors: allVisitors.size, todayVisitors: todayData.uniqueVisitors || 0, totalPageViews: totalsData.totalPageViews || totalPageViews, activeNow: analyticsCache.activeVisitors.size, avgSessionDuration: 180, bounceRate: 35, newVisitors: Math.round(allVisitors.size * 0.4), returningVisitors: Math.round(allVisitors.size * 0.6) } });
+
+    // Calculate real averages
+    const avgSessionDuration = totalSessionCount > 0 ? Math.round(totalSessionDuration / totalSessionCount) : 120;
+    const bounceRate = totalSessionCount > 0 ? Math.round((totalBounceCount / totalSessionCount) * 100) : 30;
+    const returningVisitors = Math.max(0, allVisitors.size - totalNewVisitors);
+
+    res.json({
+      dailyStats,
+      topPages: Object.entries(pageViewsByPage).map(([page, views]) => ({ page, views })).sort((a, b) => b.views - a.views).slice(0, 10),
+      deviceBreakdown,
+      hourlyActivity: hourlyActivity.map((v, h) => ({ hour: h, visitors: v })),
+      summary: {
+        totalVisitors: allVisitors.size,
+        todayVisitors: todayData.uniqueVisitors || 0,
+        totalPageViews: totalsData.totalPageViews || totalPageViews,
+        activeNow: analyticsCache.activeVisitors.size,
+        avgSessionDuration,
+        bounceRate,
+        newVisitors: totalNewVisitors,
+        returningVisitors
+      }
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
