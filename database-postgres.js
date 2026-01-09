@@ -994,8 +994,8 @@ export class PostgresDatabaseManager {
   }
 
   async getAdminPendingCounts() {
-    const [a, r] = await Promise.all([this.pool.query(`SELECT COUNT(*) as count FROM ban_appeals WHERE status IN ('open', 'claimed')`), this.pool.query(`SELECT COUNT(*) as count FROM player_reports WHERE status IN ('open', 'claimed')`)]);
-    return { appeals: parseInt(a.rows[0].count) || 0, reports: parseInt(r.rows[0].count) || 0 };
+    const [a, r, t] = await Promise.all([this.pool.query(`SELECT COUNT(*) as count FROM ban_appeals WHERE status IN ('open', 'claimed')`), this.pool.query(`SELECT COUNT(*) as count FROM player_reports WHERE status IN ('open', 'claimed')`), this.pool.query(`SELECT COUNT(*) as count FROM support_tickets WHERE status IN ('pending', 'in_progress')`)]);
+    return { appeals: parseInt(a.rows[0].count) || 0, reports: parseInt(r.rows[0].count) || 0, tickets: parseInt(t.rows[0].count) || 0 };
   }
 
   async markNotificationRead(id) { await this.pool.query('UPDATE notifications SET read = TRUE WHERE id = $1', [id]); }
