@@ -129,15 +129,10 @@ function getOnlineServers() {
 function getTotalPlayerCount() {
   const onlineServers = getOnlineServers();
   return onlineServers.reduce((sum, server) => {
-    // Check the actual property name from your API
-    const playerCount = server.data?.currentPlayerCount || 
-                       server.data?.CurrentPlayerCount || 
-                       server.data?.playersOnline ||
-                       server.data?.playerCount ||
-                       server.currentPlayerCount || 
-                       server.CurrentPlayerCount || 
-                       server.playersOnline ||
+    const playerCount = server.data?.playerCount ||
+                       server.data?.riders?.length ||
                        server.playerCount ||
+                       server.riders?.length ||
                        0;
     return sum + playerCount;
   }, 0);
@@ -1381,17 +1376,40 @@ const startUpdateLoop = async () => {
             return;
           }
           
-let debugLogged = false;
-servers.forEach(server => {
-  const serverId = server.id || server.Id;
-  if (serverId) {
-    if (!debugLogged) {
-      console.log(`[DEBUG] Full server object:`, JSON.stringify(server, null, 2));
-      debugLogged = true;
-    }
-    updateServerState(serverId, server, source);
-  }
-});
+          // Fetch detailed data for each server (includes riders/players)
+          const detailedPromises = servers.map(async (srv) => {
+            try {
+              const serverId = srv.id || srv.Id;
+              if (!serverId) return srv;
+              
+              const detailed = await fetchFromManager(source, `/servers/${serverId}`, 'GET', null, 2500);
+              
+              if (detailed) {
+                srv.session = detailed.session || null;
+                srv.riders = detailed.riders || [];
+                srv.session_state = detailed.session?.session_state;
+                srv.session_type = detailed.session?.session_type;
+                if (detailed.connection_status) {
+                  srv.liveTimingConnected = detailed.connection_status.connected;
+                }
+              }
+              
+              return srv;
+            } catch (err) {
+              return srv;
+            }
+          });
+          
+          const detailedServers = await Promise.all(detailedPromises);
+          
+          detailedServers.forEach(server => {
+            const serverId = server.id || server.Id;
+            if (serverId) {
+              server.playerCount = (server.riders || []).length;
+              server.currentPlayerCount = server.playerCount;
+              updateServerState(serverId, server, source);
+            }
+          });
           
           console.log(`[UPDATE] Updated ${servers.length} servers from ${source.url}`);
         } catch (err) {
