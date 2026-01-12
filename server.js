@@ -269,8 +269,18 @@ async function regenerateBulkCache() {
   try {
     const [players, sessions, servers, mmr, sr, records, stats, bannedGuids] = await Promise.race([
       Promise.all([
-        db.getAllPlayersSlim(), db.getRecentSessions(50), Promise.resolve(stateManager.getCachedServerData()),
-        db.getTopPlayersByMMR(100), db.getTopPlayersBySR(100), db.getAllTrackRecords(),
+        db.getAllPlayersSlim(), 
+        db.getRecentSessions(50), 
+        Promise.resolve({
+          servers: getOnlineServers(),
+          totalServers: getOnlineServers().length,
+          activeServers: getOnlineServers().length,
+          activePlayersCount: getTotalPlayerCount(),
+          onlinePlayers: []
+        }),
+        db.getTopPlayersByMMR(100), 
+        db.getTopPlayersBySR(100), 
+        db.getAllTrackRecords(),
         Promise.all([db.getTotalFinalizedSessionsCount(), db.getTotalLapsCount()]).then(([races, laps]) => ({ totalRaces: races, ...laps })),
         Promise.resolve(getAllBannedGuids())
       ]),
