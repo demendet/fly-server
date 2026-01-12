@@ -129,9 +129,15 @@ function getOnlineServers() {
 function getTotalPlayerCount() {
   const onlineServers = getOnlineServers();
   return onlineServers.reduce((sum, server) => {
-    const playerCount = server.currentPlayerCount || 
+    // Check the actual property name from your API
+    const playerCount = server.data?.currentPlayerCount || 
+                       server.data?.CurrentPlayerCount || 
+                       server.data?.playersOnline ||
+                       server.data?.playerCount ||
+                       server.currentPlayerCount || 
                        server.CurrentPlayerCount || 
-                       server.playersOnline || 
+                       server.playersOnline ||
+                       server.playerCount ||
                        0;
     return sum + playerCount;
   }, 0);
@@ -1378,6 +1384,13 @@ const startUpdateLoop = async () => {
           servers.forEach(server => {
             const serverId = server.id || server.Id;
             if (serverId) {
+              console.log(`[DEBUG] Server ${serverId} raw data:`, JSON.stringify(server).substring(0, 200));
+              console.log(`[DEBUG] Player count fields:`, {
+                currentPlayerCount: server.currentPlayerCount,
+                CurrentPlayerCount: server.CurrentPlayerCount,
+                playersOnline: server.playersOnline,
+                playerCount: server.playerCount
+              });
               updateServerState(serverId, server, source);
             }
           });
