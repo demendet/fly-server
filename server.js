@@ -103,15 +103,17 @@ const serverStates = new Map(); // serverId -> { lastSeen, data, source }
 function updateServerState(serverId, serverData, source) {
   const existing = serverStates.get(serverId);
   
-  const newPlayerCount = serverData.playerCount || serverData.riders?.length || 0;
+  // Only count as "new data" if we actually received rider information
+  const hasRiderData = Array.isArray(serverData.riders);
+  const newPlayerCount = hasRiderData ? (serverData.riders?.length || 0) : null;
   
   serverStates.set(serverId, {
     lastSeen: Date.now(),
     data: serverData,
     source: source,
-    // Keep old player count if new data doesn't have riders (timeout/partial update)
-    playerCount: newPlayerCount > 0 ? newPlayerCount : (existing?.playerCount || 0),
-    playerCountTimestamp: newPlayerCount > 0 ? Date.now() : (existing?.playerCountTimestamp || Date.now())
+    // Only update player count if we got fresh rider data, otherwise keep old count
+    playerCount: newPlayerCount !== null ? newPlayerCount : (existing?.playerCount || 0),
+    playerCountTimestamp: newPlayerCount !== null ? Date.now() : (existing?.playerCountTimestamp || Date.now())
   });
 }
 
