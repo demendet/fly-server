@@ -1381,19 +1381,17 @@ const startUpdateLoop = async () => {
             return;
           }
           
-          servers.forEach(server => {
-            const serverId = server.id || server.Id;
-            if (serverId) {
-              console.log(`[DEBUG] Server ${serverId} raw data:`, JSON.stringify(server).substring(0, 200));
-              console.log(`[DEBUG] Player count fields:`, {
-                currentPlayerCount: server.currentPlayerCount,
-                CurrentPlayerCount: server.CurrentPlayerCount,
-                playersOnline: server.playersOnline,
-                playerCount: server.playerCount
-              });
-              updateServerState(serverId, server, source);
-            }
-          });
+let debugLogged = false;
+servers.forEach(server => {
+  const serverId = server.id || server.Id;
+  if (serverId) {
+    if (!debugLogged) {
+      console.log(`[DEBUG] Full server object:`, JSON.stringify(server, null, 2));
+      debugLogged = true;
+    }
+    updateServerState(serverId, server, source);
+  }
+});
           
           console.log(`[UPDATE] Updated ${servers.length} servers from ${source.url}`);
         } catch (err) {
