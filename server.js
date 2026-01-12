@@ -127,8 +127,17 @@ function getOnlineServers() {
 }
 
 function getTotalPlayerCount() {
+  const now = Date.now();
+  const PLAYER_DATA_FRESHNESS = 10000; // Only count players from servers updated in last 10 seconds
   const onlineServers = getOnlineServers();
+  
   return onlineServers.reduce((sum, server) => {
+    // Only count players if server data is fresh (updated recently)
+    const timeSinceUpdate = now - (server.lastUpdate || 0);
+    if (timeSinceUpdate > PLAYER_DATA_FRESHNESS) {
+      return sum; // Skip stale player data
+    }
+    
     const playerCount = server.data?.playerCount ||
                        server.data?.riders?.length ||
                        server.playerCount ||
