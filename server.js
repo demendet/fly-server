@@ -101,10 +101,17 @@ const SERVER_HEARTBEAT_TIMEOUT = 30000; // 30 seconds
 const serverStates = new Map(); // serverId -> { lastSeen, data, source }
 
 function updateServerState(serverId, serverData, source) {
+  const existing = serverStates.get(serverId);
+  
+  const newPlayerCount = serverData.playerCount || serverData.riders?.length || 0;
+  
   serverStates.set(serverId, {
     lastSeen: Date.now(),
     data: serverData,
-    source: source
+    source: source,
+    // Keep old player count if new data doesn't have riders (timeout/partial update)
+    playerCount: newPlayerCount > 0 ? newPlayerCount : (existing?.playerCount || 0),
+    playerCountTimestamp: newPlayerCount > 0 ? Date.now() : (existing?.playerCountTimestamp || Date.now())
   });
 }
 
@@ -127,23 +134,10 @@ function getOnlineServers() {
 }
 
 function getTotalPlayerCount() {
-  const now = Date.now();
-  const PLAYER_DATA_FRESHNESS = 10000; // Only count players from servers updated in last 10 seconds
   const onlineServers = getOnlineServers();
-  
   return onlineServers.reduce((sum, server) => {
-    // Only count players if server data is fresh (updated recently)
-    const timeSinceUpdate = now - (server.lastUpdate || 0);
-    if (timeSinceUpdate > PLAYER_DATA_FRESHNESS) {
-      return sum; // Skip stale player data
-    }
-    
-    const playerCount = server.data?.playerCount ||
-                       server.data?.riders?.length ||
-                       server.playerCount ||
-                       server.riders?.length ||
-                       0;
-    return sum + playerCount;
+    // Use stored playerCount (which persists even if update times out)
+    return sum + (server.playerCount || 0);
   }, 0);
 }
 
