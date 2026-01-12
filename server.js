@@ -96,6 +96,60 @@ async function fetchSteamProfile(steam64) {
 let db, stateManager;
 let bannedGuidsCache = { guids: [], lastUpdated: 0, syncing: false };
 
+// Heartbeat system - keeps servers online for 30 seconds after last update
+const SERVER_HEARTBEAT_TIMEOUT = 30000; // 30 seconds
+const serverStates = new Map(); // serverId -> { lastSeen, data, source }
+
+function updateServerState(serverId, serverData, source) {
+  serverStates.set(serverId, {
+    lastSeen: Date.now(),
+    data: serverData,
+    source: source
+  });
+}
+
+function getOnlineServers() {
+  const now = Date.now();
+  const onlineServers = [];
+  
+  for (const [serverId, state] of serverStates.entries()) {
+    const timeSinceLastSeen = now - state.lastSeen;
+    if (timeSinceLastSeen <= SERVER_HEARTBEAT_TIMEOUT) {
+      onlineServers.push({
+        ...state.data,
+        id: serverId,
+        lastUpdate: state.lastSeen,
+        timeSinceUpdate: timeSinceLastSeen
+      });
+    }
+  }
+  return onlineServers;
+}
+
+function getTotalPlayerCount() {
+  const onlineServers = getOnlineServers();
+  return onlineServers.reduce((sum, server) => {
+    const playerCount = server.currentPlayerCount || 
+                       server.CurrentPlayerCount || 
+                       server.playersOnline || 
+                       0;
+    return sum + playerCount;
+  }, 0);
+}
+
+function cleanupStaleServers() {
+  const now = Date.now();
+  const CLEANUP_THRESHOLD = SERVER_HEARTBEAT_TIMEOUT * 3;
+  for (const [serverId, state] of serverStates.entries()) {
+    if (now - state.lastSeen > CLEANUP_THRESHOLD) {
+      serverStates.delete(serverId);
+      console.log(`[STATE] Cleaned up stale server: ${serverId}`);
+    }
+  }
+}
+
+setInterval(cleanupStaleServers, 120000);
+
 function getAllBannedGuids() { return bannedGuidsCache.guids; }
 
 async function syncBannedGuidsBackground() {
@@ -676,20 +730,46 @@ app.delete('/api/admin/support-tickets/:id', requireAuth, requireAdmin, async (r
 app.post('/api/support-tickets', requireAuth, async (req, res) => { try { const { subject, description, issueType, reporterGuid, reporterName } = req.body; if (!subject || !description || !issueType) return res.status(400).json({ error: 'Missing fields' }); res.json({ ticket: await db.createSupportTicket({ userId: req.userId, userEmail: req.user?.email, reporterGuid, reporterName, issueType, subject, description }) }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/support-tickets/my', requireAuth, async (req, res) => { try { res.json(await db.getUserSupportTickets(req.userId)); } catch (err) { res.status(500).json({ error: err.message }); } });
 
-function getApiSources() { return [{ id: 'manager1', url: env.MXBIKES_API_URL_1, key: env.MXBIKES_API_KEY_1 }, { id: 'manager2', url: env.MXBIKES_API_URL_2, key: env.MXBIKES_API_KEY_2 }].filter(s => s.url && s.key); }
+function getApiSources() {
+  const sources = [];
+  if (env.MXBIKES_API_URL_1 && env.MXBIKES_API_KEY_1) {
+    sources.push({ url: env.MXBIKES_API_URL_1, apiKey: env.MXBIKES_API_KEY_1 });
+  }
+  if (env.MXBIKES_API_URL_2 && env.MXBIKES_API_KEY_2) {
+    sources.push({ url: env.MXBIKES_API_URL_2, apiKey: env.MXBIKES_API_KEY_2 });
+  }
+  return sources;
+}
 
-async function fetchFromManager(source, endpoint, method = 'GET', body = null, timeoutMs = 8000) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+async function fetchFromManager(source, path, method = 'GET', body = null, timeout = 10000, signal = null) {
+  const url = `${source.url}${path}`;
+  const controller = signal ? null : new AbortController();
+  const timeoutId = setTimeout(() => {
+    if (controller) controller.abort();
+  }, timeout);
+  
   try {
-    const opts = { method, headers: { 'X-API-Key': source.key, 'Content-Type': 'application/json' }, signal: controller.signal };
-    if (body && method !== 'GET') opts.body = JSON.stringify(body);
-    const resp = await fetch(`${source.url}${endpoint}`, opts);
-    clearTimeout(timeout);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const text = await resp.text();
-    try { return JSON.parse(text); } catch { return { success: true, message: text }; }
-  } catch (err) { clearTimeout(timeout); throw err; }
+    const response = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': source.apiKey
+      },
+      body: body ? JSON.stringify(body) : null,
+      signal: signal || controller?.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
 }
 
 async function proxyToManager(endpoint, method = 'GET', body = null) {
@@ -1274,16 +1354,69 @@ app.listen(PORT, async () => {
   startBannedGuidsSyncLoop();
   startBulkCacheLoop();
   let isLeader = false, updateLoopInterval = null, cycleRunning = false, cycleStartTime = 0, consecutiveSkips = 0;
-  const startUpdateLoop = async () => {
+const startUpdateLoop = async () => {
     if (updateLoopInterval) return;
-    console.log(`[SERVER] Starting update loop`);
+    console.log(`[SERVER] Starting update loop (30s heartbeat timeout)`);
     await stateManager.recoverStateFromDatabase();
-    try { await stateManager.runUpdateCycle(); } catch (err) { console.error('[SERVER] Initial fetch error:', err.message); }
+    
+    // New non-blocking update function
+    const runNonBlockingUpdateCycle = async () => {
+      const sources = getApiSources();
+      const fetchPromises = sources.map(async (source) => {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 8000);
+          
+          const servers = await fetchFromManager(source, '/servers', 'GET', null, 8000, controller.signal);
+          clearTimeout(timeout);
+          
+          if (!Array.isArray(servers)) {
+            console.warn(`[UPDATE] Invalid response from ${source.url}`);
+            return;
+          }
+          
+          servers.forEach(server => {
+            const serverId = server.id || server.Id;
+            if (serverId) {
+              updateServerState(serverId, server, source);
+            }
+          });
+          
+          console.log(`[UPDATE] Updated ${servers.length} servers from ${source.url}`);
+        } catch (err) {
+          console.error(`[UPDATE] Error from ${source.url}:`, err.message);
+        }
+      });
+      
+      await Promise.allSettled(fetchPromises);
+      const onlineServers = getOnlineServers();
+      const totalPlayers = getTotalPlayerCount();
+      console.log(`[UPDATE] ${onlineServers.length} online servers, ${totalPlayers} total players`);
+    };
+    
+    try { await runNonBlockingUpdateCycle(); } catch (err) { console.error('[SERVER] Initial fetch error:', err.message); }
+    
     updateLoopInterval = setInterval(async () => {
-      if (cycleRunning) { const age = Date.now() - cycleStartTime; consecutiveSkips++; if (age > 20000 || consecutiveSkips >= 8) { if (stateManager.currentAbortController) stateManager.currentAbortController.abort(); cycleRunning = false; consecutiveSkips = 0; } else return; }
+      if (cycleRunning) {
+        const age = Date.now() - cycleStartTime;
+        consecutiveSkips++;
+        if (age > 20000 || consecutiveSkips >= 8) {
+          console.warn(`[UPDATE] Force reset (age: ${age}ms, skips: ${consecutiveSkips})`);
+          cycleRunning = false;
+          consecutiveSkips = 0;
+        } else {
+          console.warn(`[UPDATE] Skipping (previous still running)`);
+          return;
+        }
+      }
+      
       try { if (!await db.isLeader(machineId)) { stopUpdateLoop(); isLeader = false; return; } } catch {}
-      cycleRunning = true; cycleStartTime = Date.now(); consecutiveSkips = 0;
-      try { await stateManager.runUpdateCycle(); } catch {} finally { cycleRunning = false; }
+      
+      cycleRunning = true;
+      cycleStartTime = Date.now();
+      consecutiveSkips = 0;
+      
+      try { await runNonBlockingUpdateCycle(); } catch (err) { console.error('[UPDATE] Error:', err.message); } finally { cycleRunning = false; }
     }, 5000);
   };
   const stopUpdateLoop = () => { if (updateLoopInterval) { clearInterval(updateLoopInterval); updateLoopInterval = null; } };
