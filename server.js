@@ -1375,80 +1375,36 @@ app.listen(PORT, async () => {
   let isLeader = false, updateLoopInterval = null, cycleRunning = false, cycleStartTime = 0, consecutiveSkips = 0;
 const startUpdateLoop = async () => {
     if (updateLoopInterval) return;
-    console.log(`[SERVER] Starting update loop (30s heartbeat timeout)`);
+    console.log(`[SERVER] Starting update loop`);
     await stateManager.recoverStateFromDatabase();
-    
-    // New non-blocking update function
-    const runNonBlockingUpdateCycle = async () => {
-      const sources = getApiSources();
-      const fetchPromises = sources.map(async (source) => {
-        try {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 8000);
-          
-          const servers = await fetchFromManager(source, '/servers', 'GET', null, 8000, controller.signal);
-          clearTimeout(timeout);
-          
-          if (!Array.isArray(servers)) {
-            console.warn(`[UPDATE] Invalid response from ${source.url}`);
-            return;
+
+    // Run full update cycle (stateManager handles sessions, MMR, etc.)
+    // Then sync server states for stable player count display
+    const runFullUpdateCycle = async () => {
+      // Run stateManager cycle - this handles ALL business logic
+      await stateManager.runUpdateCycle();
+
+      // Sync serverStates from stateManager's cached data for stable display
+      const cachedData = stateManager.getCachedServerData();
+      if (cachedData?.servers) {
+        for (const server of cachedData.servers) {
+          const serverId = server.id || server.Id;
+          if (serverId) {
+            updateServerState(serverId, server, { url: 'stateManager' });
           }
-          
-          // Fetch detailed data for each server (includes riders/players)
-          const detailedPromises = servers.map(async (srv) => {
-            try {
-              const serverId = srv.id || srv.Id;
-              if (!serverId) return srv;
-              
-              const detailed = await fetchFromManager(source, `/servers/${serverId}`, 'GET', null, 2500);
-              
-              if (detailed) {
-                srv.session = detailed.session || null;
-                srv.riders = detailed.riders || [];
-                srv.session_state = detailed.session?.session_state;
-                srv.session_type = detailed.session?.session_type;
-                if (detailed.connection_status) {
-                  srv.liveTimingConnected = detailed.connection_status.connected;
-                }
-              }
-              
-              return srv;
-            } catch (err) {
-              return srv;
-            }
-          });
-          
-          const detailedServers = await Promise.all(detailedPromises);
-          
-          detailedServers.forEach(server => {
-            const serverId = server.id || server.Id;
-            if (serverId) {
-              server.playerCount = (server.riders || []).length;
-              server.currentPlayerCount = server.playerCount;
-              updateServerState(serverId, server, source);
-            }
-          });
-          
-          console.log(`[UPDATE] Updated ${servers.length} servers from ${source.url}`);
-        } catch (err) {
-          console.error(`[UPDATE] Error from ${source.url}:`, err.message);
         }
-      });
-      
-      await Promise.allSettled(fetchPromises);
-      const onlineServers = getOnlineServers();
-      const totalPlayers = getTotalPlayerCount();
-      console.log(`[UPDATE] ${onlineServers.length} online servers, ${totalPlayers} total players`);
+      }
     };
-    
-    try { await runNonBlockingUpdateCycle(); } catch (err) { console.error('[SERVER] Initial fetch error:', err.message); }
-    
+
+    try { await runFullUpdateCycle(); } catch (err) { console.error('[SERVER] Initial fetch error:', err.message); }
+
     updateLoopInterval = setInterval(async () => {
       if (cycleRunning) {
         const age = Date.now() - cycleStartTime;
         consecutiveSkips++;
         if (age > 20000 || consecutiveSkips >= 8) {
           console.warn(`[UPDATE] Force reset (age: ${age}ms, skips: ${consecutiveSkips})`);
+          if (stateManager.currentAbortController) stateManager.currentAbortController.abort();
           cycleRunning = false;
           consecutiveSkips = 0;
         } else {
@@ -1456,15 +1412,15 @@ const startUpdateLoop = async () => {
           return;
         }
       }
-      
+
       try { if (!await db.isLeader(machineId)) { stopUpdateLoop(); isLeader = false; return; } } catch {}
-      
+
       cycleRunning = true;
       cycleStartTime = Date.now();
       consecutiveSkips = 0;
-      
-      try { await runNonBlockingUpdateCycle(); } catch (err) { console.error('[UPDATE] Error:', err.message); } finally { cycleRunning = false; }
-    }, 10000);  // 10 seconds (was 5s) - reduces API load
+
+      try { await runFullUpdateCycle(); } catch (err) { console.error('[UPDATE] Error:', err.message); } finally { cycleRunning = false; }
+    }, 10000);
   };
   const stopUpdateLoop = () => { if (updateLoopInterval) { clearInterval(updateLoopInterval); updateLoopInterval = null; } };
   setInterval(async () => { if (isLeader) await db.sendLeaderHeartbeat(machineId); }, 5000);
