@@ -18,12 +18,13 @@ export class PostgresDatabaseManager {
     this._queryCount = 0;
     this._slowQueryThreshold = 3000;
     this._cache = {
-      playersSlim: { data: null, ts: 0, ttl: 2500 },
-      trackRecords: { data: null, ts: 0, ttl: 5000 },
-      topMMR: { data: null, ts: 0, ttl: 5000 },
-      topSR: { data: null, ts: 0, ttl: 5000 },
-      sessionsCount: { data: null, ts: 0, ttl: 10000 },
-      recentSessions: { data: null, ts: 0, ttl: 2500 },
+      playersSlim: { data: null, ts: 0, ttl: 15000 },      // 15 seconds (was 2.5s)
+      trackRecords: { data: null, ts: 0, ttl: 30000 },     // 30 seconds (was 5s)
+      topMMR: { data: null, ts: 0, ttl: 30000 },           // 30 seconds (was 5s)
+      topSR: { data: null, ts: 0, ttl: 30000 },            // 30 seconds (was 5s)
+      sessionsCount: { data: null, ts: 0, ttl: 60000 },    // 60 seconds (was 10s)
+      recentSessions: { data: null, ts: 0, ttl: 10000 },   // 10 seconds (was 2.5s)
+      totalLapsCount: { data: null, ts: 0, ttl: 60000 },   // 60 seconds
     };
   }
 

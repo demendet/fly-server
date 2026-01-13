@@ -96,8 +96,8 @@ async function fetchSteamProfile(steam64) {
 let db, stateManager;
 let bannedGuidsCache = { guids: [], lastUpdated: 0, syncing: false };
 
-// Heartbeat system - keeps servers online for 30 seconds after last update
-const SERVER_HEARTBEAT_TIMEOUT = 30000; // 30 seconds
+// Heartbeat system - keeps servers online for 45 seconds after last update
+const SERVER_HEARTBEAT_TIMEOUT = 45000; // 45 seconds (matches 10s poll interval + buffer)
 const serverStates = new Map(); // serverId -> { lastSeen, data, source }
 
 function updateServerState(serverId, serverData, source) {
@@ -120,7 +120,7 @@ function updateServerState(serverId, serverData, source) {
 function getOnlineServers() {
   const now = Date.now();
   const onlineServers = [];
-  
+
   for (const [serverId, state] of serverStates.entries()) {
     const timeSinceLastSeen = now - state.lastSeen;
     if (timeSinceLastSeen <= SERVER_HEARTBEAT_TIMEOUT) {
@@ -128,7 +128,10 @@ function getOnlineServers() {
         ...state.data,
         id: serverId,
         lastUpdate: state.lastSeen,
-        timeSinceUpdate: timeSinceLastSeen
+        timeSinceUpdate: timeSinceLastSeen,
+        // Use stable playerCount from state (not state.data which can be stale/0 on failed fetches)
+        playerCount: state.playerCount,
+        currentPlayerCount: state.playerCount
       });
     }
   }
@@ -298,9 +301,9 @@ async function regenerateBulkCache() {
 function startBulkCacheLoop() {
   console.log('[CACHE] Starting pre-generation loops');
   regenerateBulkCache(); regenerateAllSessionsCache(); regenerateAllPlayersCache();
-  setInterval(regenerateBulkCache, 5000);
-  setInterval(regenerateAllSessionsCache, 30000);
-  setInterval(regenerateAllPlayersCache, 30000);
+  setInterval(regenerateBulkCache, 10000);           // 10 seconds (was 5s)
+  setInterval(regenerateAllSessionsCache, 60000);    // 60 seconds (was 30s)
+  setInterval(regenerateAllPlayersCache, 60000);     // 60 seconds (was 30s)
 }
 
 function cachedResponse(res, cache, maxAge = 3) {
@@ -1461,7 +1464,7 @@ const startUpdateLoop = async () => {
       consecutiveSkips = 0;
       
       try { await runNonBlockingUpdateCycle(); } catch (err) { console.error('[UPDATE] Error:', err.message); } finally { cycleRunning = false; }
-    }, 5000);
+    }, 10000);  // 10 seconds (was 5s) - reduces API load
   };
   const stopUpdateLoop = () => { if (updateLoopInterval) { clearInterval(updateLoopInterval); updateLoopInterval = null; } };
   setInterval(async () => { if (isLeader) await db.sendLeaderHeartbeat(machineId); }, 5000);
