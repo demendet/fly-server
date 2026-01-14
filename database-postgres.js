@@ -23,6 +23,7 @@ export class PostgresDatabaseManager {
       trackRecords: { data: null, ts: 0, ttl: 60000 },     // 60 seconds - records don't change often
       trackList: { data: null, ts: 0, ttl: 120000 },       // 2 minutes - track list rarely changes
       totalPlayersCount: { data: null, ts: 0, ttl: 120000 }, // 2 minutes - total count for pagination
+      totalCounts: { data: null, ts: 0, ttl: 60000 },        // 1 minute - stats counts for homepage
       topMMR: { data: null, ts: 0, ttl: 60000 },           // 60 seconds - leaderboards update slowly
       topSR: { data: null, ts: 0, ttl: 60000 },            // 60 seconds - leaderboards update slowly
       sessionsCount: { data: null, ts: 0, ttl: 120000 },   // 2 minutes - total count rarely matters live
@@ -834,6 +835,22 @@ export class PostgresDatabaseManager {
         recordCount: parseInt(r.count),
         bestTime: r.bestTime
       }));
+    });
+  }
+
+  // Get REAL total counts for stats display (not limited array lengths!)
+  async getTotalCounts() {
+    return this._cached('totalCounts', async () => {
+      const [playersResult, recordsResult, sessionsResult] = await Promise.all([
+        this.pool.query('SELECT COUNT(*) FROM players'),
+        this.pool.query('SELECT COUNT(*) FROM track_records'),
+        this.pool.query('SELECT COUNT(*) FROM sessions WHERE "raceFinalized" = TRUE')
+      ]);
+      return {
+        totalPlayersCount: parseInt(playersResult.rows[0].count),
+        totalRecordsCount: parseInt(recordsResult.rows[0].count),
+        totalSessionsCount: parseInt(sessionsResult.rows[0].count)
+      };
     });
   }
 

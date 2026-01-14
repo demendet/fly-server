@@ -275,7 +275,7 @@ async function regenerateBulkCache() {
   bulkResponseCache.generating = true;
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Bulk cache timeout')), 10000));
   try {
-    const [players, sessions, servers, mmr, sr, records, stats, bannedGuids] = await Promise.race([
+    const [players, sessions, servers, mmr, sr, records, stats, bannedGuids, totalCounts] = await Promise.race([
       Promise.all([
         db.getAllPlayersSlim(),
         db.getRecentSessions(50),
@@ -288,13 +288,17 @@ async function regenerateBulkCache() {
         }),
         db.getTopPlayersByMMR(100),
         db.getTopPlayersBySR(100),
-        db.getTrackRecordsForBulk(),  // Use limited version for fast bulk response
+        db.getTrackRecordsForBulk(),  // Limited for fast transfer - use totalCounts for real stats
         Promise.all([db.getTotalFinalizedSessionsCount(), db.getTotalLapsCount()]).then(([races, laps]) => ({ totalRaces: races, ...laps })),
-        Promise.resolve(getAllBannedGuids())
+        Promise.resolve(getAllBannedGuids()),
+        // REAL COUNTS for stats display (not array lengths!)
+        db.getTotalCounts()
       ]),
       timeout
     ]);
-    bulkResponseCache = { data: { players, sessions, servers, leaderboards: { mmr, sr }, records, stats, bannedGuids }, timestamp: Date.now(), generating: false };
+    // Merge real counts into stats
+    const fullStats = { ...stats, ...totalCounts };
+    bulkResponseCache = { data: { players, sessions, servers, leaderboards: { mmr, sr }, records, stats: fullStats, bannedGuids }, timestamp: Date.now(), generating: false };
   } catch (err) { console.error('[BULK-CACHE] Error:', err.message); bulkResponseCache.generating = false; }
 }
 
