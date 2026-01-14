@@ -200,7 +200,7 @@ try {
   console.log('[INIT] Database and StateManager initialized');
 } catch (err) { console.error('[INIT] Failed:', err.message); process.exit(1); }
 
-const allowedOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
+const allowedOrigins = ['https://cbrservers.com', 'https://www.cbrservers.com', 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
 app.use(compression());
 app.use(cors({
   origin: (origin, cb) => cb(null, !origin || allowedOrigins.includes(origin) ? true : 'https://cbrservers.com'),
@@ -224,7 +224,7 @@ app.use('/api/', (req, res, next) => {
   if (req.path.match(/^\/session\/[A-Za-z0-9_-]+$/) && req.method === 'GET') return next();
   if (req.path === '/donations/webhook') return next(); // Stripe webhook - no origin check
   const origin = req.headers.origin || '', referer = req.headers.referer || '';
-  const validOrigins = ['https://cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
+  const validOrigins = ['https://cbrservers.com', 'https://www.cbrservers.com', 'http://localhost:3000', 'http://localhost:5173', 'http://localhost', 'https://api1.cbrservers.com', 'https://api2.cbrservers.com'];
   const isTunneled = req.headers['cf-connecting-ip'] || req.headers['cf-ray'];
   const realIp = req.headers['cf-connecting-ip'] || req.ip || '';
   const isLocal = !isTunneled && (realIp === '::1' || realIp === '127.0.0.1' || realIp === '::ffff:127.0.0.1');
