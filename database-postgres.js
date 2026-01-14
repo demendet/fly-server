@@ -5,27 +5,30 @@ export class PostgresDatabaseManager {
   constructor(connectionString) {
     this.pool = new Pool({
       connectionString,
-      max: 20,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-      statement_timeout: 15000,
-      query_timeout: 15000,
+      max: 25,                          // Slightly more connections for high concurrency
+      min: 5,                           // Keep minimum connections ready
+      idleTimeoutMillis: 60000,         // Keep idle connections longer (1 min)
+      connectionTimeoutMillis: 5000,    // Fail fast on connection issues
+      statement_timeout: 10000,         // 10s max query time
+      query_timeout: 10000,
       keepAlive: true,
-      keepAliveInitialDelayMillis: 10000,
+      keepAliveInitialDelayMillis: 5000,
       allowExitOnIdle: false,
     });
     this.pool.on('error', (err) => console.error('[DB] Pool error:', err));
     this._queryCount = 0;
     this._slowQueryThreshold = 3000;
     this._cache = {
-      playersSlim: { data: null, ts: 0, ttl: 15000 },      // 15 seconds (was 2.5s)
-      trackRecords: { data: null, ts: 0, ttl: 30000 },     // 30 seconds (was 5s)
-      topMMR: { data: null, ts: 0, ttl: 30000 },           // 30 seconds (was 5s)
-      topSR: { data: null, ts: 0, ttl: 30000 },            // 30 seconds (was 5s)
-      sessionsCount: { data: null, ts: 0, ttl: 60000 },    // 60 seconds (was 10s)
-      recentSessions: { data: null, ts: 0, ttl: 10000 },   // 10 seconds (was 2.5s)
-      totalLapsCount: { data: null, ts: 0, ttl: 60000 },   // 60 seconds
-      mostActiveTrack: { data: null, ts: 0, ttl: 60000 },  // 60 seconds
+      playersSlim: { data: null, ts: 0, ttl: 30000 },      // 30 seconds - bulk API uses this
+      trackRecords: { data: null, ts: 0, ttl: 60000 },     // 60 seconds - records don't change often
+      trackList: { data: null, ts: 0, ttl: 120000 },       // 2 minutes - track list rarely changes
+      totalPlayersCount: { data: null, ts: 0, ttl: 120000 }, // 2 minutes - total count for pagination
+      topMMR: { data: null, ts: 0, ttl: 60000 },           // 60 seconds - leaderboards update slowly
+      topSR: { data: null, ts: 0, ttl: 60000 },            // 60 seconds - leaderboards update slowly
+      sessionsCount: { data: null, ts: 0, ttl: 120000 },   // 2 minutes - total count rarely matters live
+      recentSessions: { data: null, ts: 0, ttl: 15000 },   // 15 seconds - matches polling interval
+      totalLapsCount: { data: null, ts: 0, ttl: 120000 },  // 2 minutes - total count rarely matters live
+      mostActiveTrack: { data: null, ts: 0, ttl: 120000 }, // 2 minutes
     };
   }
 
@@ -249,7 +252,30 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_donations_status ON donations(status);
         CREATE INDEX IF NOT EXISTS idx_donations_player ON donations("playerGuid");
       `);
-      console.log('[DB] Tables initialized');
+
+      // PERFORMANCE INDEXES - Critical for 47k+ players, 2M+ laps
+      await client.query(`
+        -- Players: Composite index for optimized bulk query (lastSeen OR mmr OR totalRaces)
+        CREATE INDEX IF NOT EXISTS idx_players_bulk_filter ON players("lastSeen" DESC, mmr DESC, "totalRaces" DESC);
+
+        -- Players: For sorting in paginated queries
+        CREATE INDEX IF NOT EXISTS idx_players_mmr_nulls ON players(mmr DESC NULLS LAST);
+        CREATE INDEX IF NOT EXISTS idx_players_sr_nulls ON players("safetyRating" DESC NULLS LAST);
+        CREATE INDEX IF NOT EXISTS idx_players_races_nulls ON players("totalRaces" DESC NULLS LAST);
+
+        -- Track records: Composite for fast track leaderboards
+        CREATE INDEX IF NOT EXISTS idx_track_records_track_time ON track_records("trackName", "lapTime" ASC);
+        CREATE INDEX IF NOT EXISTS idx_track_records_player_track ON track_records("playerGuid", "trackName");
+
+        -- Player sessions: For fast player history lookups
+        CREATE INDEX IF NOT EXISTS idx_player_sessions_player ON player_sessions("playerGuid");
+        CREATE INDEX IF NOT EXISTS idx_player_sessions_session ON player_sessions("sessionId");
+
+        -- Sessions: For paginated queries
+        CREATE INDEX IF NOT EXISTS idx_sessions_track ON sessions("trackName");
+        CREATE INDEX IF NOT EXISTS idx_sessions_server ON sessions("serverId");
+      `);
+      console.log('[DB] Tables and performance indexes initialized');
     } finally { client.release(); }
   }
 
@@ -485,11 +511,47 @@ export class PostgresDatabaseManager {
     return { guid: r.guid, displayName: r.displayName, mmr: r.mmr, safetyRating: r.safetyRating, totalRaces: r.totalRaces, wins: r.wins, podiums: r.podiums, holeshots: r.holeshots, lastSeen: r.lastSeen ? parseInt(r.lastSeen) : null, firstSeen: r.firstSeen ? parseInt(r.firstSeen) : null, currentServer: r.currentServer, profileImageUrl: r.steamAvatarUrl || null, totalPlaytime: r.totalPlaytime ? parseInt(r.totalPlaytime) : 0, underInvestigation: r.underInvestigation || false };
   }
 
+  // For bulk API - limited data for fast homepage loading
+  // Search uses searchPlayers() which queries ALL players
   async getAllPlayersSlim() {
     return this._cached('playersSlim', async () => {
-      const result = await this.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime", "underInvestigation" FROM players ORDER BY "lastSeen" DESC');
+      // Only recent/active players for bulk - search API handles finding anyone
+      const result = await this.pool.query(`
+        SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots,
+               "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime", "underInvestigation"
+        FROM players
+        WHERE "lastSeen" > $1 OR mmr > 1100 OR "totalRaces" > 5
+        ORDER BY "lastSeen" DESC
+        LIMIT 2000
+      `, [Date.now() - 30 * 24 * 60 * 60 * 1000]);
       return result.rows.map(r => this._rowToPlayerSlim(r));
     });
+  }
+
+  // Paginated players - for browsing ALL 47k+ players with pagination
+  async getPlayersPaginated(page = 1, limit = 50, sortBy = 'lastSeen', sortDir = 'DESC') {
+    const validSorts = ['lastSeen', 'mmr', 'safetyRating', 'totalRaces', 'displayName'];
+    const sort = validSorts.includes(sortBy) ? sortBy : 'lastSeen';
+    const dir = sortDir.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const offset = (page - 1) * limit;
+
+    const [players, countResult] = await Promise.all([
+      this.pool.query(`
+        SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots,
+               "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime"
+        FROM players
+        ORDER BY "${sort}" ${dir} NULLS LAST
+        LIMIT $1 OFFSET $2
+      `, [limit, offset]),
+      this._cached('totalPlayersCount', () => this.pool.query('SELECT COUNT(*) FROM players').then(r => parseInt(r.rows[0].count)))
+    ]);
+
+    return {
+      players: players.rows.map(r => this._rowToPlayerSlim(r)),
+      total: countResult,
+      page,
+      totalPages: Math.ceil(countResult / limit)
+    };
   }
 
   async updatePlayerSteamAvatar(guid, url) { await this.pool.query(`UPDATE players SET "steamAvatarUrl" = $1, "steamAvatarUpdated" = $2 WHERE guid = $3`, [url, Date.now(), guid]); }
@@ -704,10 +766,74 @@ export class PostgresDatabaseManager {
     return result.rows.map(r => this._rowToRecord(r));
   }
 
-  async getAllTrackRecords() {
+  // For bulk API - limited data for fast homepage loading
+  async getTrackRecordsForBulk() {
     return this._cached('trackRecords', async () => {
-      const result = await this.pool.query(`SELECT * FROM track_records ORDER BY "trackName", "lapTime" ASC`);
+      // Top 10 per track for bulk response - keeps homepage fast
+      const result = await this.pool.query(`
+        SELECT * FROM (
+          SELECT *, ROW_NUMBER() OVER (PARTITION BY "trackName" ORDER BY "lapTime" ASC) as rn
+          FROM track_records
+        ) ranked
+        WHERE rn <= 10
+        ORDER BY "trackName", "lapTime" ASC
+      `);
       return result.rows.map(r => this._rowToRecord(r));
+    });
+  }
+
+  // Full records - used by dedicated Records page with pagination
+  async getAllTrackRecords() {
+    const result = await this.pool.query(`SELECT * FROM track_records ORDER BY "trackName", "lapTime" ASC`);
+    return result.rows.map(r => this._rowToRecord(r));
+  }
+
+  // Paginated track records for a specific track - FAST with proper indexes
+  async getTrackRecordsPaginated(trackName, page = 1, limit = 50) {
+    const offset = (page - 1) * limit;
+    const [records, countResult] = await Promise.all([
+      this.pool.query(`
+        SELECT *, ROW_NUMBER() OVER (ORDER BY "lapTime" ASC) as position
+        FROM track_records
+        WHERE "trackName" = $1
+        ORDER BY "lapTime" ASC
+        LIMIT $2 OFFSET $3
+      `, [trackName, limit, offset]),
+      this.pool.query(`SELECT COUNT(*) FROM track_records WHERE "trackName" = $1`, [trackName])
+    ]);
+    return {
+      records: records.rows.map(r => ({ ...this._rowToRecord(r), position: parseInt(r.position) })),
+      total: parseInt(countResult.rows[0].count),
+      page,
+      totalPages: Math.ceil(parseInt(countResult.rows[0].count) / limit)
+    };
+  }
+
+  // Find player's position on a specific track
+  async getPlayerTrackPosition(trackName, playerGuid) {
+    const result = await this.pool.query(`
+      SELECT position FROM (
+        SELECT "playerGuid", ROW_NUMBER() OVER (ORDER BY "lapTime" ASC) as position
+        FROM track_records WHERE "trackName" = $1
+      ) ranked WHERE "playerGuid" = $2
+    `, [trackName, playerGuid.toUpperCase()]);
+    return result.rows[0]?.position || null;
+  }
+
+  // Get list of all tracks with record counts - cached for performance
+  async getTrackList() {
+    return this._cached('trackList', async () => {
+      const result = await this.pool.query(`
+        SELECT "trackName", COUNT(*) as count, MIN("lapTime") as bestTime
+        FROM track_records
+        GROUP BY "trackName"
+        ORDER BY "trackName" ASC
+      `);
+      return result.rows.map(r => ({
+        trackName: r.trackName,
+        recordCount: parseInt(r.count),
+        bestTime: r.bestTime
+      }));
     });
   }
 

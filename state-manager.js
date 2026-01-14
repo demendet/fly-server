@@ -22,6 +22,10 @@ export class StateManager {
     this.processingRaceSessions = new Set();
     // Store last warmup results for sessions to ensure they're saved before transition
     this.lastWarmupResults = new Map();
+    // Network optimization: cache detailed server data between full fetches
+    this.cachedDetailedServers = new Map(); // serverId -> detailed data
+    this.detailedFetchCounter = 0;
+    this.DETAILED_FETCH_INTERVAL = 3; // Fetch detailed data every 3rd cycle (45s at 15s interval)
   }
 
   async recoverStateFromDatabase() {
@@ -103,6 +107,8 @@ export class StateManager {
         } finally { clearTimeout(tid); if (signal && handler && !signal.aborted) signal.removeEventListener('abort', handler); }
       } catch { if (signal?.aborted) throw new DOMException('Aborted', 'AbortError'); return null; }
     };
+
+    // Always fetch basic server lists (2 requests)
     const [s1, s2] = await Promise.all([
       fetchJson(`${this.env.MXBIKES_API_URL_1}/servers`, { headers: { 'X-API-Key': this.env.MXBIKES_API_KEY_1 } }, 10000),
       fetchJson(`${this.env.MXBIKES_API_URL_2}/servers`, { headers: { 'X-API-Key': this.env.MXBIKES_API_KEY_2 } }, 10000)
@@ -111,16 +117,55 @@ export class StateManager {
     (s1 || []).forEach(s => smap.set(s.id, { server: s, source: 1 }));
     (s2 || []).forEach(s => { if (!smap.has(s.id)) smap.set(s.id, { server: s, source: 2 }); });
     const all = Array.from(smap.values()).map(v => v.server);
-    const detailed = await Promise.all(all.map(srv => {
-      const src = smap.get(srv.id)?.source || 1;
-      this.serverToApiMap.set(srv.id, src);
-      const url = src === 1 ? this.env.MXBIKES_API_URL_1 : this.env.MXBIKES_API_URL_2;
-      const key = src === 1 ? this.env.MXBIKES_API_KEY_1 : this.env.MXBIKES_API_KEY_2;
-      return fetchJson(`${url}/servers/${srv.id}`, { headers: { 'X-API-Key': key } }, 2500);
-    }));
-    const servers = all.map((srv, i) => {
-      const d = detailed[i];
-      if (d) { srv.session = d.session || null; srv.riders = d.riders || []; srv.session_state = d.session?.session_state; srv.session_type = d.session?.session_type; if (d.connection_status) srv.liveTimingConnected = d.connection_status.connected; }
+
+    // OPTIMIZATION: Only fetch detailed server data every Nth cycle OR for servers with active sessions
+    this.detailedFetchCounter++;
+    const shouldFetchAllDetailed = this.detailedFetchCounter >= this.DETAILED_FETCH_INTERVAL;
+    if (shouldFetchAllDetailed) this.detailedFetchCounter = 0;
+
+    // Determine which servers need detailed fetch
+    const serversNeedingDetail = all.filter(srv => {
+      // Always fetch if we should do full refresh
+      if (shouldFetchAllDetailed) return true;
+      // Always fetch if server has an active session
+      if (this.serverSessions.has(srv.id)) return true;
+      // Fetch if we don't have cached data
+      if (!this.cachedDetailedServers.has(srv.id)) return true;
+      // Otherwise use cache
+      return false;
+    });
+
+    // Only fetch detailed data for servers that need it
+    const detailedResults = new Map();
+    if (serversNeedingDetail.length > 0) {
+      const detailed = await Promise.all(serversNeedingDetail.map(srv => {
+        const src = smap.get(srv.id)?.source || 1;
+        this.serverToApiMap.set(srv.id, src);
+        const url = src === 1 ? this.env.MXBIKES_API_URL_1 : this.env.MXBIKES_API_URL_2;
+        const key = src === 1 ? this.env.MXBIKES_API_KEY_1 : this.env.MXBIKES_API_KEY_2;
+        return fetchJson(`${url}/servers/${srv.id}`, { headers: { 'X-API-Key': key } }, 2500);
+      }));
+      serversNeedingDetail.forEach((srv, i) => {
+        if (detailed[i]) {
+          detailedResults.set(srv.id, detailed[i]);
+          this.cachedDetailedServers.set(srv.id, detailed[i]); // Update cache
+        }
+      });
+      if (!shouldFetchAllDetailed) {
+        console.log(`[FETCH] Optimized: ${serversNeedingDetail.length}/${all.length} detailed fetches (${all.length - serversNeedingDetail.length} cached)`);
+      }
+    }
+
+    // Build servers array using fresh + cached data
+    const servers = all.map(srv => {
+      const d = detailedResults.get(srv.id) || this.cachedDetailedServers.get(srv.id);
+      if (d) {
+        srv.session = d.session || null;
+        srv.riders = d.riders || [];
+        srv.session_state = d.session?.session_state;
+        srv.session_type = d.session?.session_type;
+        if (d.connection_status) srv.liveTimingConnected = d.connection_status.connected;
+      }
       srv.apiSource = smap.get(srv.id)?.source || 1;
       srv.liveTimingConnected = srv.liveTimingConnected ?? false;
       srv.remoteAdminConnected = srv.remoteAdminConnected ?? false;

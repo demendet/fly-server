@@ -277,8 +277,8 @@ async function regenerateBulkCache() {
   try {
     const [players, sessions, servers, mmr, sr, records, stats, bannedGuids] = await Promise.race([
       Promise.all([
-        db.getAllPlayersSlim(), 
-        db.getRecentSessions(50), 
+        db.getAllPlayersSlim(),
+        db.getRecentSessions(50),
         Promise.resolve({
           servers: getOnlineServers(),
           totalServers: getOnlineServers().length,
@@ -286,9 +286,9 @@ async function regenerateBulkCache() {
           activePlayersCount: getTotalPlayerCount(),
           onlinePlayers: []
         }),
-        db.getTopPlayersByMMR(100), 
-        db.getTopPlayersBySR(100), 
-        db.getAllTrackRecords(),
+        db.getTopPlayersByMMR(100),
+        db.getTopPlayersBySR(100),
+        db.getTrackRecordsForBulk(),  // Use limited version for fast bulk response
         Promise.all([db.getTotalFinalizedSessionsCount(), db.getTotalLapsCount()]).then(([races, laps]) => ({ totalRaces: races, ...laps })),
         Promise.resolve(getAllBannedGuids())
       ]),
@@ -301,7 +301,7 @@ async function regenerateBulkCache() {
 function startBulkCacheLoop() {
   console.log('[CACHE] Starting pre-generation loops');
   regenerateBulkCache(); regenerateAllSessionsCache(); regenerateAllPlayersCache();
-  setInterval(regenerateBulkCache, 10000);           // 10 seconds (was 5s)
+  setInterval(regenerateBulkCache, 15000);           // 15 seconds (reduced from 10s)
   setInterval(regenerateAllSessionsCache, 60000);    // 60 seconds (was 30s)
   setInterval(regenerateAllPlayersCache, 60000);     // 60 seconds (was 30s)
 }
@@ -375,6 +375,18 @@ app.post('/api/admin/restore/:guid', requireAuth, requireRole(ADMIN_ROLES), asyn
 
 app.get('/api/players', async (req, res) => { try { res.json(await db.getAllPlayers()); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/players/search', async (req, res) => { try { const q = req.query.q || ''; res.json(q.length < 2 ? [] : await db.searchPlayers(q, 100)); } catch (err) { res.status(500).json({ error: err.message }); } });
+
+// Paginated players - for browsing ALL 47k+ players
+app.get('/api/players/page/:page', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.params.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+    const sortBy = req.query.sort || 'lastSeen';
+    const sortDir = req.query.dir || 'DESC';
+    const result = await db.getPlayersPaginated(page, limit, sortBy, sortDir);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 app.get('/api/sessions', async (req, res) => { try { res.json(await db.getRecentSessions(parseInt(req.query.limit) || 50)); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/sessions/most-active-track', async (req, res) => { try { res.json(await db.getMostActiveTrack()); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/session/:sessionId', async (req, res) => { try { const s = await db.getSession(req.params.sessionId); s ? res.json(s) : res.status(404).json({ error: 'Not found' }); } catch (err) { res.status(500).json({ error: err.message }); } });
@@ -430,6 +442,36 @@ app.get('/api/player/:guid', async (req, res) => {
 app.get('/api/player/:guid/sessions', async (req, res) => { try { res.json(await db.getPlayerSessions(req.params.guid.toUpperCase(), parseInt(req.query.limit) || 50)); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/leaderboards', async (req, res) => { try { const [mmr, sr] = await Promise.all([db.getTopPlayersByMMR(100), db.getTopPlayersBySR(100)]); res.json({ mmr, safetyRating: sr }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/records', async (req, res) => { try { res.json(await db.getAllTrackRecords()); } catch (err) { res.status(500).json({ error: err.message }); } });
+
+// Paginated track records - for Records page with full search capability
+app.get('/api/records/track/:trackName', async (req, res) => {
+  try {
+    const { trackName } = req.params;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+    const result = await db.getTrackRecordsPaginated(decodeURIComponent(trackName), page, limit);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Find player's position on a track
+app.get('/api/records/track/:trackName/player/:guid', async (req, res) => {
+  try {
+    const position = await db.getPlayerTrackPosition(
+      decodeURIComponent(req.params.trackName),
+      req.params.guid
+    );
+    res.json({ position });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Get list of all tracks with record counts
+app.get('/api/records/tracks', async (req, res) => {
+  try {
+    const result = await db.getTrackList();
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.get('/api/records/top', async (req, res) => {
   try {
@@ -1421,7 +1463,7 @@ const startUpdateLoop = async () => {
       consecutiveSkips = 0;
 
       try { await runFullUpdateCycle(); } catch (err) { console.error('[UPDATE] Error:', err.message); } finally { cycleRunning = false; }
-    }, 10000);
+    }, 15000);  // 15 seconds (reduced from 10s to save ~33% network)
   };
   const stopUpdateLoop = () => { if (updateLoopInterval) { clearInterval(updateLoopInterval); updateLoopInterval = null; } };
   setInterval(async () => { if (isLeader) await db.sendLeaderHeartbeat(machineId); }, 5000);
