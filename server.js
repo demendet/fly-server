@@ -436,14 +436,34 @@ app.get('/api/sessions/cursor', async (req, res) => {
 
 app.get('/api/player/:guid', async (req, res) => {
   try {
-    const result = await db.pool.query('SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots, "steamAvatarUrl" FROM players WHERE guid = $1', [req.params.guid.toUpperCase()]);
+    const result = await db.pool.query(`
+      SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots,
+             "steamAvatarUrl", "lastSeen", "firstSeen", "currentServer", "totalPlaytime", "underInvestigation"
+      FROM players WHERE guid = $1
+    `, [req.params.guid.toUpperCase()]);
     if (!result.rows.length) return res.status(404).json({ error: 'Player not found' });
     const r = result.rows[0];
-    res.json({ guid: r.guid, displayName: r.displayName, mmr: r.mmr || 1000, safetyRating: r.safetyRating || 0.5, totalRaces: r.totalRaces || 0, wins: r.wins || 0, podiums: r.podiums || 0, holeshots: r.holeshots || 0, profileImageUrl: r.steamAvatarUrl || null });
+    res.json({
+      guid: r.guid,
+      displayName: r.displayName,
+      mmr: r.mmr || 1000,
+      safetyRating: r.safetyRating || 0.5,
+      totalRaces: r.totalRaces || 0,
+      wins: r.wins || 0,
+      podiums: r.podiums || 0,
+      holeshots: r.holeshots || 0,
+      profileImageUrl: r.steamAvatarUrl || null,
+      lastSeen: r.lastSeen ? parseInt(r.lastSeen) : null,
+      firstSeen: r.firstSeen ? parseInt(r.firstSeen) : null,
+      currentServer: r.currentServer || null,
+      totalPlaytime: r.totalPlaytime ? parseInt(r.totalPlaytime) : 0,
+      underInvestigation: r.underInvestigation || false
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/player/:guid/sessions', async (req, res) => { try { res.json(await db.getPlayerSessions(req.params.guid.toUpperCase(), parseInt(req.query.limit) || 50)); } catch (err) { res.status(500).json({ error: err.message }); } });
+app.get('/api/player/:guid/records', async (req, res) => { try { res.json(await db.getPlayerRecords(req.params.guid.toUpperCase())); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/leaderboards', async (req, res) => { try { const [mmr, sr] = await Promise.all([db.getTopPlayersByMMR(100), db.getTopPlayersBySR(100)]); res.json({ mmr, safetyRating: sr }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/records', async (req, res) => { try { res.json(await db.getAllTrackRecords()); } catch (err) { res.status(500).json({ error: err.message }); } });
 
