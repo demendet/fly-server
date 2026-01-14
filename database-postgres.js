@@ -598,7 +598,7 @@ export class PostgresDatabaseManager {
     if (!parts.length) return;
     vals.push(id);
     await this.pool.query(`UPDATE sessions SET ${parts.join(', ')} WHERE id = $${n}`, vals);
-    if (u.raceFinalized || u.hasFinished) { this._invalidate('recentSessions'); this._invalidate('sessionsCount'); }
+    if (u.raceFinalized || u.hasFinished) { this._invalidate('recentSessions'); this._invalidate('sessionsCount'); this._invalidate('totalCounts'); }
   }
 
   async batchUpdateSessions(updates) {
@@ -863,7 +863,7 @@ export class PostgresDatabaseManager {
       const [playersResult, recordsResult, sessionsResult] = await Promise.all([
         this.pool.query('SELECT COUNT(*) FROM players'),
         this.pool.query('SELECT COUNT(*) FROM track_records'),
-        this.pool.query('SELECT COUNT(*) FROM sessions WHERE "raceFinalized" = TRUE')
+        this.pool.query('SELECT COUNT(*) FROM sessions WHERE "raceFinalized" = TRUE AND "totalEntries" > 0')
       ]);
       return {
         totalPlayersCount: parseInt(playersResult.rows[0].count),
