@@ -341,8 +341,18 @@ export class PostgresDatabaseManager {
 
   async searchPlayers(query, limit = 100) {
     const term = `%${query.toLowerCase()}%`;
-    const result = await this.pool.query(`SELECT * FROM players WHERE "displayNameLower" LIKE $1 OR guid ILIKE $1 ORDER BY "lastSeen" DESC LIMIT $2`, [term, limit]);
-    return result.rows.map(r => this._rowToPlayer(r));
+    // Use subquery to get MMR rank for each matching player
+    const result = await this.pool.query(`
+      WITH ranked AS (
+        SELECT *, ROW_NUMBER() OVER (ORDER BY mmr DESC) as mmr_rank
+        FROM players
+      )
+      SELECT * FROM ranked
+      WHERE "displayNameLower" LIKE $1 OR guid ILIKE $1
+      ORDER BY mmr DESC
+      LIMIT $2
+    `, [term, limit]);
+    return result.rows.map(r => ({ ...this._rowToPlayer(r), mmrRank: parseInt(r.mmr_rank) }));
   }
 
   async getTotalPlayersCount() {
