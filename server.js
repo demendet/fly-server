@@ -275,7 +275,7 @@ async function regenerateBulkCache() {
   bulkResponseCache.generating = true;
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Bulk cache timeout')), 10000));
   try {
-    const [players, sessions, servers, mmr, sr, records, stats, bannedGuids, totalCounts] = await Promise.race([
+    const [players, sessions, servers, mmr, sr, records, stats, bannedGuids, totalCounts, avatars] = await Promise.race([
       Promise.all([
         db.getAllPlayersSlim(),
         db.getRecentSessions(50),
@@ -292,13 +292,15 @@ async function regenerateBulkCache() {
         Promise.all([db.getTotalFinalizedSessionsCount(), db.getTotalLapsCount()]).then(([races, laps]) => ({ totalRaces: races, ...laps })),
         Promise.resolve(getAllBannedGuids()),
         // REAL COUNTS for stats display (not array lengths!)
-        db.getTotalCounts()
+        db.getTotalCounts(),
+        // ALL player avatars (lightweight - just GUID:URL map)
+        db.getAllPlayerAvatars()
       ]),
       timeout
     ]);
     // Merge real counts into stats
     const fullStats = { ...stats, ...totalCounts };
-    bulkResponseCache = { data: { players, sessions, servers, leaderboards: { mmr, sr }, records, stats: fullStats, bannedGuids }, timestamp: Date.now(), generating: false };
+    bulkResponseCache = { data: { players, sessions, servers, leaderboards: { mmr, sr }, records, stats: fullStats, bannedGuids, avatars }, timestamp: Date.now(), generating: false };
   } catch (err) { console.error('[BULK-CACHE] Error:', err.message); bulkResponseCache.generating = false; }
 }
 

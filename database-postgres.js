@@ -24,6 +24,7 @@ export class PostgresDatabaseManager {
       trackList: { data: null, ts: 0, ttl: 120000 },       // 2 minutes - track list rarely changes
       totalPlayersCount: { data: null, ts: 0, ttl: 120000 }, // 2 minutes - total count for pagination
       totalCounts: { data: null, ts: 0, ttl: 60000 },        // 1 minute - stats counts for homepage
+      playerAvatars: { data: null, ts: 0, ttl: 120000 },      // 2 minutes - avatar map for all players
       topMMR: { data: null, ts: 0, ttl: 60000 },           // 60 seconds - leaderboards update slowly
       topSR: { data: null, ts: 0, ttl: 60000 },            // 60 seconds - leaderboards update slowly
       sessionsCount: { data: null, ts: 0, ttl: 120000 },   // 2 minutes - total count rarely matters live
@@ -835,6 +836,24 @@ export class PostgresDatabaseManager {
         recordCount: parseInt(r.count),
         bestTime: r.bestTime
       }));
+    });
+  }
+
+  // Lightweight avatar lookup - just GUID and avatar URL for ALL players
+  // Much smaller payload than full player data
+  async getAllPlayerAvatars() {
+    return this._cached('playerAvatars', async () => {
+      const result = await this.pool.query(`
+        SELECT guid, "steamAvatarUrl"
+        FROM players
+        WHERE "steamAvatarUrl" IS NOT NULL AND "steamAvatarUrl" != ''
+      `);
+      // Return as object map for fast lookups: { GUID: avatarUrl }
+      const avatarMap = {};
+      result.rows.forEach(r => {
+        avatarMap[r.guid] = r.steamAvatarUrl;
+      });
+      return avatarMap;
     });
   }
 
