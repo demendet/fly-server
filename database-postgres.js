@@ -369,11 +369,11 @@ export class PostgresDatabaseManager {
 
   async getTopPlayersByMMR(limit = 100) {
     if (limit === 100) return this._cached('topMMR', async () => {
-      const result = await this.pool.query('SELECT * FROM players ORDER BY mmr DESC LIMIT $1', [limit]);
-      return result.rows.map(r => this._rowToPlayer(r));
+      const result = await this.pool.query('SELECT *, ROW_NUMBER() OVER (ORDER BY mmr DESC) as mmr_rank FROM players ORDER BY mmr DESC LIMIT $1', [limit]);
+      return result.rows.map(r => ({ ...this._rowToPlayer(r), mmrRank: parseInt(r.mmr_rank) }));
     });
-    const result = await this.pool.query('SELECT * FROM players ORDER BY mmr DESC LIMIT $1', [limit]);
-    return result.rows.map(r => this._rowToPlayer(r));
+    const result = await this.pool.query('SELECT *, ROW_NUMBER() OVER (ORDER BY mmr DESC) as mmr_rank FROM players ORDER BY mmr DESC LIMIT $1', [limit]);
+    return result.rows.map(r => ({ ...this._rowToPlayer(r), mmrRank: parseInt(r.mmr_rank) }));
   }
 
   async getTopPlayersBySR(limit = 100) {
