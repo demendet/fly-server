@@ -376,6 +376,7 @@ app.post('/api/admin/restore/:guid', requireAuth, requireRole(ADMIN_ROLES), asyn
 app.get('/api/players', async (req, res) => { try { res.json(await db.getAllPlayers()); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/players/search', async (req, res) => { try { const q = req.query.q || ''; res.json(q.length < 2 ? [] : await db.searchPlayers(q, 100)); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/sessions', async (req, res) => { try { res.json(await db.getRecentSessions(parseInt(req.query.limit) || 50)); } catch (err) { res.status(500).json({ error: err.message }); } });
+app.get('/api/sessions/most-active-track', async (req, res) => { try { res.json(await db.getMostActiveTrack()); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/session/:sessionId', async (req, res) => { try { const s = await db.getSession(req.params.sessionId); s ? res.json(s) : res.status(404).json({ error: 'Not found' }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/sessions/player/:playerGuid', async (req, res) => { try { res.json(await db.searchSessionsByPlayer(req.params.playerGuid, parseInt(req.query.limit) || 100)); } catch (err) { res.status(500).json({ error: err.message }); } });
 

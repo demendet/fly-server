@@ -25,6 +25,7 @@ export class PostgresDatabaseManager {
       sessionsCount: { data: null, ts: 0, ttl: 60000 },    // 60 seconds (was 10s)
       recentSessions: { data: null, ts: 0, ttl: 10000 },   // 10 seconds (was 2.5s)
       totalLapsCount: { data: null, ts: 0, ttl: 60000 },   // 60 seconds
+      mostActiveTrack: { data: null, ts: 0, ttl: 60000 },  // 60 seconds
     };
   }
 
@@ -641,6 +642,21 @@ export class PostgresDatabaseManager {
       const warmupLaps = parseInt(result.rows[0].warmup_laps) || 0;
       const raceLaps = parseInt(result.rows[0].race_laps) || 0;
       return { warmupLaps, raceLaps, totalLaps: warmupLaps + raceLaps };
+    });
+  }
+
+  async getMostActiveTrack() {
+    return this._cached('mostActiveTrack', async () => {
+      const result = await this.pool.query(`
+        SELECT "trackName", COUNT(*) as count
+        FROM sessions
+        WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 AND "trackName" IS NOT NULL AND "trackName" != ''
+        GROUP BY "trackName"
+        ORDER BY count DESC
+        LIMIT 1
+      `);
+      if (result.rows.length === 0) return null;
+      return { name: result.rows[0].trackName, count: parseInt(result.rows[0].count) };
     });
   }
 
