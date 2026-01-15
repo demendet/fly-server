@@ -368,28 +368,58 @@ export class StateManager {
 
   async _processRaceOverAsync(srv, sid) {
     const riders = srv.riders || [];
-    if (!riders.length) return;
+    if (!riders.length) {
+      // Even with no riders, mark session as processed to prevent endless retries
+      console.log(`[RACEOVER] ${sid}: No riders present`);
+      return;
+    }
     try {
+      // Include ALL riders, not just those with laps - they participated in the session
       const withLaps = riders.filter(r => r.total_laps > 0);
-      if (withLaps.length) {
-        const results = withLaps.sort((a, b) => (a.position || 999) - (b.position || 999))
-          .map((r, i) => ({ playerGuid: r.guid.toUpperCase(), playerName: r.name, position: i + 1, bestLapTime: r.best_lap?.time || r.best_lap_time || 0, totalLaps: r.total_laps || 0, raceNumber: r.race_number, bikeName: r.bike_name || r.bike_short_name || '', gap: r.gap || 0, driverStatus: r.driver_status || null, holeshotTime: r.holeshot_time || null, contacts: r.contacts || [], invalidLaps: r.invalid_laps || 0, penalties: r.penalties || [] }));
-        const mmr = this.db.calculateMMRChanges(results);
-        await this.db.batchUpdatePlayerMMR(mmr);
+      const withoutLaps = riders.filter(r => !r.total_laps || r.total_laps === 0);
+
+      // Build results for riders with laps (sorted by position)
+      const lapResults = withLaps.sort((a, b) => (a.position || 999) - (b.position || 999))
+        .map((r, i) => ({ playerGuid: r.guid.toUpperCase(), playerName: r.name, position: i + 1, bestLapTime: r.best_lap?.time || r.best_lap_time || 0, totalLaps: r.total_laps || 0, raceNumber: r.race_number, bikeName: r.bike_name || r.bike_short_name || '', gap: r.gap || 0, driverStatus: r.driver_status || 'DNF', holeshotTime: r.holeshot_time || null, contacts: r.contacts || [], invalidLaps: r.invalid_laps || 0, penalties: r.penalties || [] }));
+
+      // Add riders without laps as DNS/DNF at the end
+      const noLapResults = withoutLaps.map((r, i) => ({
+        playerGuid: r.guid.toUpperCase(), playerName: r.name, position: lapResults.length + i + 1,
+        bestLapTime: 0, totalLaps: 0, raceNumber: r.race_number, bikeName: r.bike_name || r.bike_short_name || '',
+        gap: 0, driverStatus: r.driver_status || 'DNS', holeshotTime: null, contacts: [], invalidLaps: 0, penalties: []
+      }));
+
+      const results = [...lapResults, ...noLapResults];
+
+      if (results.length > 0) {
+        // Only calculate MMR for riders who completed at least 1 lap
+        const mmrEligible = lapResults.length >= 2 ? lapResults : [];
+        const mmr = mmrEligible.length > 0 ? this.db.calculateMMRChanges(mmrEligible) : [];
+        if (mmr.length > 0) {
+          await this.db.batchUpdatePlayerMMR(mmr);
+        }
         const players = await this.db.getBatchPlayers(results.map(r => r.playerGuid));
         const resultsWithMMR = results.map(r => {
           const m = mmr.find(c => c.playerGuid === r.playerGuid);
           const p = players.find(x => x?.guid === r.playerGuid);
           return { ...r, mmrChange: m?.mmrChange || 0, srChange: m?.srChange || 0, currentMMR: p?.mmr || 1000 };
         });
-        const playerSessions = mmr.map(c => {
-          const r = results.find(x => x.playerGuid === c.playerGuid);
-          return { playerGuid: c.playerGuid, position: r.position, bestLapTime: r.bestLapTime, totalLaps: r.totalLaps, didFinish: true, mmrChange: c.mmrChange, srChange: c.srChange };
+        const playerSessions = results.map(r => {
+          const m = mmr.find(c => c.playerGuid === r.playerGuid);
+          return { playerGuid: r.playerGuid, position: r.position, bestLapTime: r.bestLapTime, totalLaps: r.totalLaps, didFinish: r.totalLaps > 0, mmrChange: m?.mmrChange || 0, srChange: m?.srChange || 0 };
         });
         await this.db.batchAddPlayersToSession(sid, playerSessions);
         await this.db.updateSession(sid, { raceResults: resultsWithMMR, totalEntries: resultsWithMMR.length });
-        await this.sendMMRToManagerAPI(srv, resultsWithMMR);
-        console.log(`[RACEOVER] ${sid}: Winner ${results[0]?.playerName}`);
+        // Only send MMR notifications if we actually calculated MMR
+        if (mmr.length > 0) {
+          await this.sendMMRToManagerAPI(srv, resultsWithMMR.filter(r => r.mmrChange !== 0));
+        }
+        const winner = lapResults[0];
+        console.log(`[RACEOVER] ${sid}: ${lapResults.length} finishers, ${noLapResults.length} DNS/DNF${winner ? `, Winner: ${winner.playerName}` : ''}`);
+      } else {
+        // No participants at all - still mark session with empty results
+        await this.db.updateSession(sid, { raceResults: [], totalEntries: 0 });
+        console.log(`[RACEOVER] ${sid}: No participants`);
       }
     } catch (e) { console.error('[RACEOVER] Error:', e.message); throw e; }
   }

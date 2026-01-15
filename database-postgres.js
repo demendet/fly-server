@@ -80,8 +80,9 @@ export class PostgresDatabaseManager {
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions("createdAt" DESC);
         CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions("isActive") WHERE "isActive" = TRUE;
-        CREATE INDEX IF NOT EXISTS idx_sessions_finalized ON sessions("raceFinalized", "totalEntries", "startTime" DESC) WHERE "raceFinalized" = TRUE AND "totalEntries" > 0;
+        CREATE INDEX IF NOT EXISTS idx_sessions_finalized ON sessions("raceFinalized", "totalEntries", "endTime" DESC) WHERE "raceFinalized" = TRUE AND "totalEntries" > 0;
         CREATE INDEX IF NOT EXISTS idx_sessions_starttime ON sessions("startTime" DESC);
+        CREATE INDEX IF NOT EXISTS idx_sessions_endtime ON sessions("endTime" DESC);
       `);
       await client.query(`
         CREATE TABLE IF NOT EXISTS player_sessions (
@@ -623,7 +624,8 @@ export class PostgresDatabaseManager {
   }
 
   async getRecentSessions(limit = 50) {
-    const q = `(SELECT * FROM sessions WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 ORDER BY "startTime" DESC LIMIT $1) UNION ALL (SELECT * FROM sessions WHERE "isActive" = TRUE ORDER BY "startTime" DESC LIMIT $1) ORDER BY "startTime" DESC LIMIT $1`;
+    // Order by endTime to show most recently COMPLETED sessions first
+    const q = `(SELECT * FROM sessions WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 ORDER BY "endTime" DESC LIMIT $1) UNION ALL (SELECT * FROM sessions WHERE "isActive" = TRUE ORDER BY "startTime" DESC LIMIT $1) ORDER BY COALESCE("endTime", "startTime") DESC LIMIT $1`;
     if (limit === 50) return this._cached('recentSessions', async () => {
       const result = await this.pool.query(q, [limit]);
       const seen = new Set();
@@ -636,10 +638,11 @@ export class PostgresDatabaseManager {
 
   async getAllFinalizedSessions(limit = 100) {
     // Default to 100 for backwards compatibility, used by cache regeneration
+    // Order by endTime to show most recently COMPLETED sessions first
     const result = await this.pool.query(`
       SELECT * FROM sessions
       WHERE ("raceFinalized" = TRUE AND "totalEntries" > 0) OR "isActive" = TRUE
-      ORDER BY "startTime" DESC
+      ORDER BY COALESCE("endTime", "startTime") DESC
       LIMIT $1
     `, [limit]);
     return result.rows.map(r => this._rowToSession(r));
@@ -647,11 +650,12 @@ export class PostgresDatabaseManager {
 
   async getSessionsPage(page = 1, limit = 25) {
     // Server-side pagination - only fetch what's needed for current page
+    // Order by endTime to show most recently COMPLETED sessions first
     const offset = (page - 1) * limit;
     const result = await this.pool.query(`
       SELECT * FROM sessions
       WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
-      ORDER BY "startTime" DESC
+      ORDER BY "endTime" DESC
       LIMIT $1 OFFSET $2
     `, [limit, offset]);
     return result.rows.map(r => this._rowToSession(r));
@@ -659,30 +663,31 @@ export class PostgresDatabaseManager {
 
   async getSessionsCursor(cursor = null, limit = 25) {
     // Cursor-based pagination - O(1) performance regardless of page depth
-    // cursor is the startTime of the last session from previous page
+    // cursor is the endTime of the last session from previous page
+    // Using endTime ensures sessions are ordered by when they FINISHED, not started
     let result;
     if (cursor) {
       result = await this.pool.query(`
         SELECT * FROM sessions
-        WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 AND "startTime" < $1
-        ORDER BY "startTime" DESC
+        WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 AND "endTime" < $1
+        ORDER BY "endTime" DESC
         LIMIT $2
       `, [cursor, limit]);
     } else {
       result = await this.pool.query(`
         SELECT * FROM sessions
         WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
-        ORDER BY "startTime" DESC
+        ORDER BY "endTime" DESC
         LIMIT $1
       `, [limit]);
     }
     const sessions = result.rows.map(r => this._rowToSession(r));
-    const nextCursor = sessions.length === limit ? sessions[sessions.length - 1].startTime : null;
+    const nextCursor = sessions.length === limit ? sessions[sessions.length - 1].endTime : null;
     return { sessions, nextCursor };
   }
 
   async searchSessionsByPlayer(guid, limit = 100) {
-    const result = await this.pool.query(`SELECT s.* FROM sessions s INNER JOIN player_sessions ps ON s.id = ps."sessionId" WHERE ps."playerGuid" = $1 AND s."raceFinalized" = TRUE ORDER BY s."startTime" DESC LIMIT $2`, [guid.toUpperCase(), limit]);
+    const result = await this.pool.query(`SELECT s.* FROM sessions s INNER JOIN player_sessions ps ON s.id = ps."sessionId" WHERE ps."playerGuid" = $1 AND s."raceFinalized" = TRUE ORDER BY s."endTime" DESC LIMIT $2`, [guid.toUpperCase(), limit]);
     return result.rows.map(r => this._rowToSession(r));
   }
 
