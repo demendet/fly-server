@@ -143,7 +143,7 @@ export class StateManager {
         this.serverToApiMap.set(srv.id, src);
         const url = src === 1 ? this.env.MXBIKES_API_URL_1 : this.env.MXBIKES_API_URL_2;
         const key = src === 1 ? this.env.MXBIKES_API_KEY_1 : this.env.MXBIKES_API_KEY_2;
-        return fetchJson(`${url}/servers/${srv.id}`, { headers: { 'X-API-Key': key } }, 2500);
+        return fetchJson(`${url}/servers/${srv.id}`, { headers: { 'X-API-Key': key } }, 8000);
       }));
       serversNeedingDetail.forEach((srv, i) => {
         if (detailed[i]) {
@@ -187,7 +187,9 @@ export class StateManager {
     for (const srv of data.servers) {
       const sid = this.serverSessions.get(srv.id);
       const state = srv.session_state || 'UNKNOWN';
-      const phase = (srv.session_type || '').toLowerCase();
+      // Use cached phase if API didn't return one (timeout protection)
+      const cachedPhase = this.serverSessionPhases.get(srv.id) || '';
+      const phase = (srv.session_type || '').toLowerCase() || cachedPhase;
       const isWarmup = phase.includes('warmup') || phase.includes('practice');
       if (sid && state === 'INPROGRESS' && isWarmup) {
         const riders = srv.riders || [];
@@ -239,13 +241,16 @@ export class StateManager {
       if (processed.has(srv.id)) continue;
       processed.add(srv.id);
       const state = srv.session_state || 'UNKNOWN';
-      const phase = (srv.session_type || '').toLowerCase();
+      // CRITICAL: If phase is missing but we have an active session, use the cached phase
+      // This prevents losing track of sessions when API fetch times out
+      const cachedPhase = this.serverSessionPhases.get(srv.id) || '';
+      const phase = (srv.session_type || '').toLowerCase() || cachedPhase;
       const prevState = this.previousServerStates.get(srv.id) || 'UNKNOWN';
-      const prevPhase = this.serverSessionPhases.get(srv.id) || '';
+      const prevPhase = cachedPhase;
       if (state !== prevState || (phase !== prevPhase && state === 'INPROGRESS')) {
         await this.handleSessionStateChange(srv, prevState, state, prevPhase, phase, signal);
         this.previousServerStates.set(srv.id, state);
-        this.serverSessionPhases.set(srv.id, phase);
+        if (phase) this.serverSessionPhases.set(srv.id, phase); // Only update if we have a phase
       }
     }
   }
@@ -429,7 +434,7 @@ export class StateManager {
     const src = this.serverToApiMap.get(srv.id) || 1;
     let url = src === 1 ? this.env.MXBIKES_API_URL_1 : this.env.MXBIKES_API_URL_2;
     let key = src === 1 ? this.env.MXBIKES_API_KEY_1 : this.env.MXBIKES_API_KEY_2;
-    const send = (u, k) => Promise.race([fetch(`${u}/servers/${srv.id}/mmr-updates`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': k }, body: JSON.stringify({ Players: updates }) }), new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), 5000))]);
+    const send = (u, k) => Promise.race([fetch(`${u}/servers/${srv.id}/mmr-updates`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': k }, body: JSON.stringify({ Players: updates }) }), new Promise((_, r) => setTimeout(() => r(new Error('Timeout')), 10000))]);
     try {
       const res = await send(url, key);
       if (res.ok) { const r = await res.json(); console.log(`[MMR] ${r.messagesSent}/${r.totalPlayers} delivered`); }
