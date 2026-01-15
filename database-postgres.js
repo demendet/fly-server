@@ -625,7 +625,16 @@ export class PostgresDatabaseManager {
 
   async getRecentSessions(limit = 50) {
     // Order by endTime to show most recently COMPLETED sessions first
-    const q = `(SELECT * FROM sessions WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 ORDER BY "endTime" DESC LIMIT $1) UNION ALL (SELECT * FROM sessions WHERE "isActive" = TRUE ORDER BY "startTime" DESC LIMIT $1) ORDER BY COALESCE("endTime", "startTime") DESC LIMIT $1`;
+    // Use subqueries without ORDER BY (PostgreSQL doesn't allow ORDER BY in UNION subqueries)
+    const q = `
+      SELECT * FROM (
+        SELECT * FROM sessions WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
+        UNION ALL
+        SELECT * FROM sessions WHERE "isActive" = TRUE
+      ) combined
+      ORDER BY COALESCE("endTime", "startTime") DESC
+      LIMIT $1
+    `;
     if (limit === 50) return this._cached('recentSessions', async () => {
       const result = await this.pool.query(q, [limit]);
       const seen = new Set();
