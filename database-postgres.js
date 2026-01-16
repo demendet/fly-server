@@ -255,6 +255,19 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_donations_status ON donations(status);
         CREATE INDEX IF NOT EXISTS idx_donations_player ON donations("playerGuid");
       `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS streamer_applications (
+          id TEXT PRIMARY KEY, "applicationIndex" SERIAL, "userId" TEXT NOT NULL,
+          "playerGuid" TEXT, "playerName" TEXT NOT NULL, "channelName" TEXT NOT NULL,
+          "channelUrl" TEXT NOT NULL, "additionalInfo" TEXT,
+          status TEXT DEFAULT 'pending', "claimedBy" TEXT, "claimedByGuid" TEXT, "claimedAt" BIGINT,
+          "resolvedBy" TEXT, "resolvedByGuid" TEXT, "resolvedAt" BIGINT, resolution TEXT,
+          "createdAt" BIGINT NOT NULL, "updatedAt" BIGINT
+        );
+        CREATE INDEX IF NOT EXISTS idx_streamer_apps_user ON streamer_applications("userId");
+        CREATE INDEX IF NOT EXISTS idx_streamer_apps_status ON streamer_applications(status);
+        CREATE INDEX IF NOT EXISTS idx_streamer_apps_created ON streamer_applications("createdAt" DESC);
+      `);
 
       // PERFORMANCE INDEXES - Critical for 47k+ players, 2M+ laps
       await client.query(`
@@ -1197,8 +1210,8 @@ export class PostgresDatabaseManager {
   }
 
   async getAdminPendingCounts() {
-    const [a, r, t] = await Promise.all([this.pool.query(`SELECT COUNT(*) as count FROM ban_appeals WHERE status IN ('open', 'claimed')`), this.pool.query(`SELECT COUNT(*) as count FROM player_reports WHERE status IN ('open', 'claimed')`), this.pool.query(`SELECT COUNT(*) as count FROM support_tickets WHERE status IN ('pending', 'in_progress')`)]);
-    return { appeals: parseInt(a.rows[0].count) || 0, reports: parseInt(r.rows[0].count) || 0, tickets: parseInt(t.rows[0].count) || 0 };
+    const [a, r, t, s] = await Promise.all([this.pool.query(`SELECT COUNT(*) as count FROM ban_appeals WHERE status IN ('open', 'claimed')`), this.pool.query(`SELECT COUNT(*) as count FROM player_reports WHERE status IN ('open', 'claimed')`), this.pool.query(`SELECT COUNT(*) as count FROM support_tickets WHERE status IN ('pending', 'in_progress')`), this.pool.query(`SELECT COUNT(*) as count FROM streamer_applications WHERE status IN ('pending', 'claimed')`)]);
+    return { appeals: parseInt(a.rows[0].count) || 0, reports: parseInt(r.rows[0].count) || 0, tickets: parseInt(t.rows[0].count) || 0, streamerApps: parseInt(s.rows[0].count) || 0 };
   }
 
   async markNotificationRead(id) { await this.pool.query('UPDATE notifications SET read = TRUE WHERE id = $1', [id]); }
@@ -1430,6 +1443,55 @@ export class PostgresDatabaseManager {
   _rowToTicket(r) {
     if (!r) return null;
     return { id: r.id, userId: r.userId, userEmail: r.userEmail, reporterGuid: r.reporterGuid, reporterName: r.reporterName, issueType: r.issueType, subject: r.subject, description: r.description, status: r.status, resolution: r.resolution, resolvedBy: r.resolvedBy, resolvedByGuid: r.resolvedByGuid, resolvedAt: r.resolvedAt ? parseInt(r.resolvedAt) : null, createdAt: r.createdAt ? parseInt(r.createdAt) : null, updatedAt: r.updatedAt ? parseInt(r.updatedAt) : null };
+  }
+
+  // Streamer Applications
+  async createStreamerApplication(a) {
+    const id = `streamer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+    await this.pool.query(`INSERT INTO streamer_applications (id, "userId", "playerGuid", "playerName", "channelName", "channelUrl", "additionalInfo", status, "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $8)`, [id, a.userId, a.playerGuid || null, a.playerName, a.channelName, a.channelUrl, a.additionalInfo || null, now]);
+    return { id, ...a, status: 'pending', createdAt: now, updatedAt: now };
+  }
+
+  async getAllStreamerApplications(status = null) {
+    let q = 'SELECT * FROM streamer_applications';
+    const params = [];
+    if (status) { q += ' WHERE status = $1'; params.push(status); }
+    q += ' ORDER BY "createdAt" DESC';
+    const result = await this.pool.query(q, params);
+    return result.rows.map(r => this._rowToStreamerApp(r));
+  }
+
+  async getStreamerApplication(id) {
+    const result = await this.pool.query('SELECT * FROM streamer_applications WHERE id = $1', [id]);
+    return this._rowToStreamerApp(result.rows[0]);
+  }
+
+  async getUserStreamerApplications(userId) {
+    const result = await this.pool.query('SELECT * FROM streamer_applications WHERE "userId" = $1 ORDER BY "createdAt" DESC', [userId]);
+    return result.rows.map(r => this._rowToStreamerApp(r));
+  }
+
+  async claimStreamerApplication(id, admin, adminGuid) {
+    const now = Date.now();
+    const result = await this.pool.query(`UPDATE streamer_applications SET status = 'claimed', "claimedBy" = $1, "claimedByGuid" = $2, "claimedAt" = $3, "updatedAt" = $3 WHERE id = $4 AND status = 'pending' RETURNING *`, [admin, adminGuid, now, id]);
+    return this._rowToStreamerApp(result.rows[0]);
+  }
+
+  async resolveStreamerApplication(id, admin, adminGuid, approved, resolution = '') {
+    const now = Date.now();
+    const result = await this.pool.query(`UPDATE streamer_applications SET status = $1, "resolvedBy" = $2, "resolvedByGuid" = $3, "resolvedAt" = $4, resolution = $5, "updatedAt" = $4 WHERE id = $6 RETURNING *`, [approved ? 'approved' : 'denied', admin, adminGuid, now, resolution, id]);
+    return this._rowToStreamerApp(result.rows[0]);
+  }
+
+  async hasActiveStreamerApplication(userId) {
+    const result = await this.pool.query(`SELECT id FROM streamer_applications WHERE "userId" = $1 AND status IN ('pending', 'claimed') LIMIT 1`, [userId]);
+    return result.rows.length > 0;
+  }
+
+  _rowToStreamerApp(r) {
+    if (!r) return null;
+    return { id: r.id, applicationIndex: r.applicationIndex, userId: r.userId, playerGuid: r.playerGuid, playerName: r.playerName, channelName: r.channelName, channelUrl: r.channelUrl, additionalInfo: r.additionalInfo, status: r.status, claimedBy: r.claimedBy, claimedByGuid: r.claimedByGuid, claimedAt: r.claimedAt ? parseInt(r.claimedAt) : null, resolvedBy: r.resolvedBy, resolvedByGuid: r.resolvedByGuid, resolvedAt: r.resolvedAt ? parseInt(r.resolvedAt) : null, resolution: r.resolution, createdAt: r.createdAt ? parseInt(r.createdAt) : null, updatedAt: r.updatedAt ? parseInt(r.updatedAt) : null };
   }
 
   async getMessageTemplates() {
