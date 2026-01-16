@@ -1489,6 +1489,21 @@ export class PostgresDatabaseManager {
     return result.rows.length > 0;
   }
 
+  async deleteStreamerApplication(id) {
+    const result = await this.pool.query(`DELETE FROM streamer_applications WHERE id = $1 RETURNING *`, [id]);
+    return result.rows.length > 0;
+  }
+
+  async deleteAllStreamerApplicationsByGuid(guid) {
+    const result = await this.pool.query(`DELETE FROM streamer_applications WHERE "playerGuid" = $1`, [guid.toUpperCase()]);
+    return result.rowCount;
+  }
+
+  async deleteAllStreamerApplicationsByUserId(userId) {
+    const result = await this.pool.query(`DELETE FROM streamer_applications WHERE "userId" = $1`, [userId]);
+    return result.rowCount;
+  }
+
   _rowToStreamerApp(r) {
     if (!r) return null;
     return { id: r.id, applicationIndex: r.applicationIndex, userId: r.userId, playerGuid: r.playerGuid, playerName: r.playerName, channelName: r.channelName, channelUrl: r.channelUrl, additionalInfo: r.additionalInfo, status: r.status, claimedBy: r.claimedBy, claimedByGuid: r.claimedByGuid, claimedAt: r.claimedAt ? parseInt(r.claimedAt) : null, resolvedBy: r.resolvedBy, resolvedByGuid: r.resolvedByGuid, resolvedAt: r.resolvedAt ? parseInt(r.resolvedAt) : null, resolution: r.resolution, createdAt: r.createdAt ? parseInt(r.createdAt) : null, updatedAt: r.updatedAt ? parseInt(r.updatedAt) : null };
