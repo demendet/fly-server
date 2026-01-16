@@ -1459,6 +1459,8 @@ const startUpdateLoop = async () => {
     if (updateLoopInterval) return;
     console.log(`[SERVER] Starting update loop`);
     await stateManager.recoverStateFromDatabase();
+    // Start the race watcher for fast RACEOVER detection (polls race-phase servers every 3s)
+    stateManager.startRaceWatcher();
 
     // Run full update cycle (stateManager handles sessions, MMR, etc.)
     // Then sync server states for stable player count display
