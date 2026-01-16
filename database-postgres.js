@@ -1203,6 +1203,8 @@ export class PostgresDatabaseManager {
 
   async markNotificationRead(id) { await this.pool.query('UPDATE notifications SET read = TRUE WHERE id = $1', [id]); }
   async markAllNotificationsRead(userId) { await this.pool.query('UPDATE notifications SET read = TRUE WHERE "userId" = $1', [userId]); }
+  async deleteNotification(id, userId) { const r = await this.pool.query('DELETE FROM notifications WHERE id = $1 AND "userId" = $2 RETURNING id', [id, userId]); return r.rowCount > 0; }
+  async clearAllNotifications(userId) { await this.pool.query('DELETE FROM notifications WHERE "userId" = $1', [userId]); }
 
   async createAnnouncement(a) {
     const id = `ann_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;

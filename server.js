@@ -789,6 +789,8 @@ app.get('/api/notifications/unread-by-type', requireAuth, async (req, res) => { 
 app.get('/api/admin/pending-counts', requireAuth, requireModerator, async (req, res) => { try { res.json(await db.getAdminPendingCounts()); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.post('/api/notifications/:id/read', requireAuth, async (req, res) => { try { const n = await db.markNotificationRead(req.params.id); n ? res.json({ success: true }) : res.status(404).json({ error: 'Not found' }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.post('/api/notifications/read-all', requireAuth, async (req, res) => { try { await db.markAllNotificationsRead(req.userId); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); } });
+app.delete('/api/notifications/:id', requireAuth, async (req, res) => { try { const d = await db.deleteNotification(req.params.id, req.userId); d ? res.json({ success: true }) : res.status(404).json({ error: 'Not found' }); } catch (err) { res.status(500).json({ error: err.message }); } });
+app.delete('/api/notifications/clear-all', requireAuth, async (req, res) => { try { await db.clearAllNotifications(req.userId); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); } });
 
 app.get('/api/announcements', async (req, res) => { try { res.json(await db.getActiveAnnouncements()); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/admin/announcements', requireAuth, requireModerator, async (req, res) => { try { res.json(await db.getAllAnnouncements()); } catch (err) { res.status(500).json({ error: err.message }); } });
