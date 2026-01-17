@@ -38,13 +38,21 @@ export class StateManager {
     try {
       const sessions = await this.db.getActiveSessions();
       if (!sessions.length) { console.log('[RECOVERY] No active sessions'); return; }
+      let racePhaseCount = 0;
       for (const s of sessions) {
         this.serverSessions.set(s.serverId, s.id);
         if (s.currentSessionPhase) this.serverSessionPhases.set(s.serverId, s.currentSessionPhase);
         if (s.sessionState) this.previousServerStates.set(s.serverId, s.sessionState);
         if (s.raceResults?.length) this.mmrSentSessions.add(s.id);
+        // CRITICAL: Add race-phase sessions to race watcher so they get fast-polled for RACEOVER
+        const phase = (s.currentSessionPhase || '').toLowerCase();
+        if (phase.includes('race') && !phase.includes('over')) {
+          this.racePhaseServers.set(s.serverId, { sessionId: s.id, apiSource: 1 });
+          racePhaseCount++;
+          console.log(`[RECOVERY] Added ${s.serverId} to race watcher (session ${s.id}, phase: ${s.currentSessionPhase})`);
+        }
       }
-      console.log(`[RECOVERY] ${sessions.length} sessions, ${this.mmrSentSessions.size} with MMR`);
+      console.log(`[RECOVERY] ${sessions.length} sessions, ${this.mmrSentSessions.size} with MMR, ${racePhaseCount} in race phase`);
     } catch (err) { console.error('[RECOVERY] Error:', err.message); }
   }
 
