@@ -834,10 +834,10 @@ app.post('/api/admin/streamers/:guid/revoke', requireAuth, requireAdmin, async (
 function getApiSources() {
   const sources = [];
   if (env.MXBIKES_API_URL_1 && env.MXBIKES_API_KEY_1) {
-    sources.push({ url: env.MXBIKES_API_URL_1, apiKey: env.MXBIKES_API_KEY_1 });
+    sources.push({ id: 'manager1', url: env.MXBIKES_API_URL_1, apiKey: env.MXBIKES_API_KEY_1 });
   }
   if (env.MXBIKES_API_URL_2 && env.MXBIKES_API_KEY_2) {
-    sources.push({ url: env.MXBIKES_API_URL_2, apiKey: env.MXBIKES_API_KEY_2 });
+    sources.push({ id: 'manager2', url: env.MXBIKES_API_URL_2, apiKey: env.MXBIKES_API_KEY_2 });
   }
   return sources;
 }
