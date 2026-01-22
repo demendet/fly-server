@@ -438,11 +438,16 @@ app.get('/api/sessions/cursor', async (req, res) => {
 
 app.get('/api/player/:guid', async (req, res) => {
   try {
+    const upperGuid = req.params.guid.toUpperCase();
+    // Get player data along with their MMR and SR ranks
     const result = await db.pool.query(`
-      SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots,
-             "steamAvatarUrl", "lastSeen", "firstSeen", "currentServer", "totalPlaytime", "underInvestigation"
-      FROM players WHERE guid = $1
-    `, [req.params.guid.toUpperCase()]);
+      SELECT
+        p.guid, p."displayName", p.mmr, p."safetyRating", p."totalRaces", p.wins, p.podiums, p.holeshots,
+        p."steamAvatarUrl", p."lastSeen", p."firstSeen", p."currentServer", p."totalPlaytime", p."underInvestigation",
+        (SELECT COUNT(*) + 1 FROM players WHERE mmr > p.mmr) as "mmrRank",
+        (SELECT COUNT(*) + 1 FROM players WHERE "safetyRating" > p."safetyRating") as "srRank"
+      FROM players p WHERE p.guid = $1
+    `, [upperGuid]);
     if (!result.rows.length) return res.status(404).json({ error: 'Player not found' });
     const r = result.rows[0];
     res.json({
@@ -459,7 +464,9 @@ app.get('/api/player/:guid', async (req, res) => {
       firstSeen: r.firstSeen ? parseInt(r.firstSeen) : null,
       currentServer: r.currentServer || null,
       totalPlaytime: r.totalPlaytime ? parseInt(r.totalPlaytime) : 0,
-      underInvestigation: r.underInvestigation || false
+      underInvestigation: r.underInvestigation || false,
+      mmrRank: r.mmrRank ? parseInt(r.mmrRank) : null,
+      srRank: r.srRank ? parseInt(r.srRank) : null
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -865,8 +872,10 @@ async function fetchFromManager(source, path, method = 'GET', body = null, timeo
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    
-    return await response.json();
+
+    const text = await response.text();
+    if (!text) return { success: true };
+    try { return JSON.parse(text); } catch { return { success: true, message: text }; }
   } catch (err) {
     clearTimeout(timeoutId);
     throw err;
@@ -875,8 +884,12 @@ async function fetchFromManager(source, path, method = 'GET', body = null, timeo
 
 async function proxyToManager(endpoint, method = 'GET', body = null) {
   const sources = getApiSources();
-  for (const src of sources) { try { return await fetchFromManager(src, endpoint, method, body); } catch {} }
-  throw new Error('All API sources failed');
+  let lastError = null;
+  for (const src of sources) {
+    try { return await fetchFromManager(src, endpoint, method, body); }
+    catch (e) { lastError = e; }
+  }
+  throw new Error(lastError ? `All API sources failed: ${lastError.message}` : 'No API sources configured');
 }
 
 async function proxyToAllManagers(endpoint, method = 'GET', body = null) {
