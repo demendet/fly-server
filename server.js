@@ -1356,6 +1356,18 @@ app.get('/api/admin/analytics', requireAuth, requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Server Statistics (game server stats, not website)
+app.get('/api/admin/server-stats', requireAuth, requireModerator, async (req, res) => {
+  try {
+    const range = req.query.range || '7d';
+    const stats = await db.getServerStatistics(range);
+    res.json(stats);
+  } catch (err) {
+    console.error('[SERVER-STATS] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/settings/messages', requireAuth, requireAdmin, async (req, res) => { try { res.json(await db.getMessageTemplates()); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.put('/api/admin/settings/messages', requireAuth, requireAdmin, async (req, res) => { try { res.json(await db.updateMessageTemplates(req.body)); } catch (err) { res.status(500).json({ error: err.message }); } });
 

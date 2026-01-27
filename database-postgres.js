@@ -1594,5 +1594,230 @@ export class PostgresDatabaseManager {
     return { totalDonations: parseInt(r.total), totalAmount: parseInt(r.totalAmount), thisMonthDonations: parseInt(r.thisMonth), thisMonthAmount: parseInt(r.thisMonthAmount) };
   }
 
+  // ==========================================
+  // SERVER STATISTICS
+  // ==========================================
+
+  async getServerStatistics(range = '7d') {
+    const now = Date.now();
+    const ranges = {
+      '1d': 1 * 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      '30d': 30 * 24 * 60 * 60 * 1000,
+      '1y': 365 * 24 * 60 * 60 * 1000,
+      'all': now // All time
+    };
+    const periodMs = ranges[range] || ranges['7d'];
+    const startTime = now - periodMs;
+
+    // Get peak players and unique players for different time periods
+    const [
+      peakPlayers,
+      uniquePlayers,
+      dailyActivity,
+      hourlyActivity,
+      trackPopularity,
+      sessionTrends,
+      totalStats
+    ] = await Promise.all([
+      this._getPeakPlayers(),
+      this._getUniquePlayers(),
+      this._getDailyActivity(startTime),
+      this._getHourlyActivity(startTime),
+      this._getTrackPopularity(startTime),
+      this._getSessionTrends(startTime),
+      this._getTotalServerStats()
+    ]);
+
+    return {
+      peakPlayers,
+      uniquePlayers,
+      dailyActivity,
+      hourlyActivity,
+      trackPopularity,
+      sessionTrends,
+      totalStats
+    };
+  }
+
+  async _getPeakPlayers() {
+    const now = Date.now();
+    const periods = {
+      '1d': now - 1 * 24 * 60 * 60 * 1000,
+      '7d': now - 7 * 24 * 60 * 60 * 1000,
+      '30d': now - 30 * 24 * 60 * 60 * 1000,
+      '1y': now - 365 * 24 * 60 * 60 * 1000,
+      'all': 0
+    };
+
+    const results = {};
+    for (const [key, startTime] of Object.entries(periods)) {
+      // Get max totalEntries from any single session in the period
+      const result = await this.pool.query(`
+        SELECT COALESCE(MAX("totalEntries"), 0) as peak
+        FROM sessions
+        WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
+        ${startTime > 0 ? `AND "endTime" >= $1` : ''}
+      `, startTime > 0 ? [startTime] : []);
+      results[key] = parseInt(result.rows[0]?.peak || 0);
+    }
+    return results;
+  }
+
+  async _getUniquePlayers() {
+    const now = Date.now();
+    const periods = {
+      '1d': now - 1 * 24 * 60 * 60 * 1000,
+      '7d': now - 7 * 24 * 60 * 60 * 1000,
+      '30d': now - 30 * 24 * 60 * 60 * 1000,
+      '1y': now - 365 * 24 * 60 * 60 * 1000,
+      'all': 0
+    };
+
+    const results = {};
+    for (const [key, startTime] of Object.entries(periods)) {
+      // Count unique players who participated in sessions during this period
+      const result = await this.pool.query(`
+        SELECT COUNT(DISTINCT ps."playerGuid") as count
+        FROM player_sessions ps
+        JOIN sessions s ON ps."sessionId" = s.id
+        WHERE s."raceFinalized" = TRUE
+        ${startTime > 0 ? `AND s."endTime" >= $1` : ''}
+      `, startTime > 0 ? [startTime] : []);
+      results[key] = parseInt(result.rows[0]?.count || 0);
+    }
+    return results;
+  }
+
+  async _getDailyActivity(startTime) {
+    // Get daily unique players and session counts
+    const result = await this.pool.query(`
+      SELECT
+        DATE(to_timestamp("endTime" / 1000.0)) as date,
+        COUNT(DISTINCT s.id) as sessions,
+        SUM(s."totalEntries") as total_entries,
+        COUNT(DISTINCT ps."playerGuid") as unique_players
+      FROM sessions s
+      LEFT JOIN player_sessions ps ON s.id = ps."sessionId"
+      WHERE s."raceFinalized" = TRUE
+        AND s."totalEntries" > 0
+        AND s."endTime" >= $1
+      GROUP BY DATE(to_timestamp("endTime" / 1000.0))
+      ORDER BY date ASC
+    `, [startTime]);
+
+    return result.rows.map(r => ({
+      date: r.date?.toISOString().split('T')[0] || '',
+      sessions: parseInt(r.sessions || 0),
+      totalEntries: parseInt(r.total_entries || 0),
+      uniquePlayers: parseInt(r.unique_players || 0)
+    }));
+  }
+
+  async _getHourlyActivity(startTime) {
+    // Get average activity by hour of day (UTC)
+    const result = await this.pool.query(`
+      SELECT
+        EXTRACT(HOUR FROM to_timestamp("startTime" / 1000.0)) as hour,
+        COUNT(*) as sessions,
+        AVG("totalEntries") as avg_players
+      FROM sessions
+      WHERE "raceFinalized" = TRUE
+        AND "totalEntries" > 0
+        AND "startTime" >= $1
+      GROUP BY EXTRACT(HOUR FROM to_timestamp("startTime" / 1000.0))
+      ORDER BY hour ASC
+    `, [startTime]);
+
+    // Fill in all 24 hours
+    const hourlyData = Array(24).fill(null).map((_, i) => ({
+      hour: i,
+      sessions: 0,
+      avgPlayers: 0
+    }));
+
+    result.rows.forEach(r => {
+      const hour = parseInt(r.hour);
+      hourlyData[hour] = {
+        hour,
+        sessions: parseInt(r.sessions || 0),
+        avgPlayers: Math.round(parseFloat(r.avg_players || 0) * 10) / 10
+      };
+    });
+
+    return hourlyData;
+  }
+
+  async _getTrackPopularity(startTime) {
+    const result = await this.pool.query(`
+      SELECT
+        "trackName",
+        COUNT(*) as sessions,
+        SUM("totalEntries") as total_players,
+        AVG("totalEntries") as avg_players
+      FROM sessions
+      WHERE "raceFinalized" = TRUE
+        AND "totalEntries" > 0
+        AND "endTime" >= $1
+      GROUP BY "trackName"
+      ORDER BY sessions DESC
+      LIMIT 15
+    `, [startTime]);
+
+    return result.rows.map(r => ({
+      trackName: r.trackName,
+      sessions: parseInt(r.sessions || 0),
+      totalPlayers: parseInt(r.total_players || 0),
+      avgPlayers: Math.round(parseFloat(r.avg_players || 0) * 10) / 10
+    }));
+  }
+
+  async _getSessionTrends(startTime) {
+    // Get sessions per day with additional metrics
+    const result = await this.pool.query(`
+      SELECT
+        DATE(to_timestamp("endTime" / 1000.0)) as date,
+        COUNT(*) as sessions,
+        SUM("totalEntries") as total_entries,
+        AVG("totalEntries") as avg_entries,
+        MAX("totalEntries") as peak_entries
+      FROM sessions
+      WHERE "raceFinalized" = TRUE
+        AND "totalEntries" > 0
+        AND "endTime" >= $1
+      GROUP BY DATE(to_timestamp("endTime" / 1000.0))
+      ORDER BY date ASC
+    `, [startTime]);
+
+    return result.rows.map(r => ({
+      date: r.date?.toISOString().split('T')[0] || '',
+      sessions: parseInt(r.sessions || 0),
+      totalEntries: parseInt(r.total_entries || 0),
+      avgEntries: Math.round(parseFloat(r.avg_entries || 0) * 10) / 10,
+      peakEntries: parseInt(r.peak_entries || 0)
+    }));
+  }
+
+  async _getTotalServerStats() {
+    const [
+      totalResult,
+      racesResult,
+      playtimeResult,
+      avgMMRResult
+    ] = await Promise.all([
+      this.pool.query(`SELECT COUNT(*) as count FROM players`),
+      this.pool.query(`SELECT SUM("totalRaces") as total FROM players`),
+      this.pool.query(`SELECT SUM("totalPlaytime") as total FROM players`),
+      this.pool.query(`SELECT AVG(mmr) as avg FROM players WHERE "totalRaces" > 0`)
+    ]);
+
+    return {
+      totalPlayers: parseInt(totalResult.rows[0]?.count || 0),
+      totalRaces: parseInt(racesResult.rows[0]?.total || 0),
+      totalPlaytime: parseInt(playtimeResult.rows[0]?.total || 0),
+      avgMMR: Math.round(parseFloat(avgMMRResult.rows[0]?.avg || 1000))
+    };
+  }
+
   async close() { await this.pool.end(); console.log('[DB] Closed'); }
 }
