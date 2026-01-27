@@ -369,6 +369,7 @@ app.get('/api/bulk', async (req, res) => {
 });
 
 app.get('/api/banned-guids', (req, res) => res.json({ bannedGuids: getAllBannedGuids() }));
+app.get('/api/moderation-stats', async (req, res) => { try { res.json(await db.getPublicModerationStats()); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/under-investigation', async (req, res) => { try { res.json({ players: await db.getPlayersUnderInvestigation() }); } catch (err) { res.status(500).json({ error: err.message }); } });
 
 app.post('/api/admin/investigate/:guid', requireAuth, requireRole(ADMIN_ROLES), async (req, res) => {

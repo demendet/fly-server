@@ -1157,6 +1157,22 @@ export class PostgresDatabaseManager {
     return result.rows.map(r => this._rowToReport(r));
   }
 
+  async getPublicModerationStats() {
+    const result = await this.pool.query(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE "actionTaken" = 'banned' OR status = 'banned') as bans,
+        COUNT(*) FILTER (WHERE "actionTaken" = 'warned' OR status = 'warned') as warnings
+      FROM player_reports
+    `);
+    const row = result.rows[0];
+    return {
+      totalReports: parseInt(row.total || 0),
+      resultedInBan: parseInt(row.bans || 0),
+      warningsIssued: parseInt(row.warnings || 0)
+    };
+  }
+
   async getReport(id) {
     const result = await this.pool.query('SELECT * FROM player_reports WHERE id = $1', [id]);
     return result.rows.length ? this._rowToReport(result.rows[0]) : null;
