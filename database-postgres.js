@@ -1642,51 +1642,58 @@ export class PostgresDatabaseManager {
 
   async _getPeakPlayers() {
     const now = Date.now();
-    const periods = {
-      '1d': now - 1 * 24 * 60 * 60 * 1000,
-      '7d': now - 7 * 24 * 60 * 60 * 1000,
-      '30d': now - 30 * 24 * 60 * 60 * 1000,
-      '1y': now - 365 * 24 * 60 * 60 * 1000,
-      'all': 0
-    };
+    const t1d = now - 1 * 24 * 60 * 60 * 1000;
+    const t7d = now - 7 * 24 * 60 * 60 * 1000;
+    const t30d = now - 30 * 24 * 60 * 60 * 1000;
+    const t1y = now - 365 * 24 * 60 * 60 * 1000;
 
-    const results = {};
-    for (const [key, startTime] of Object.entries(periods)) {
-      // Get max totalEntries from any single session in the period
-      const result = await this.pool.query(`
-        SELECT COALESCE(MAX("totalEntries"), 0) as peak
-        FROM sessions
-        WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
-        ${startTime > 0 ? `AND "endTime" >= $1` : ''}
-      `, startTime > 0 ? [startTime] : []);
-      results[key] = parseInt(result.rows[0]?.peak || 0);
-    }
-    return results;
+    // Single query with CASE statements for all periods
+    const result = await this.pool.query(`
+      SELECT
+        COALESCE(MAX(CASE WHEN "endTime" >= $1 THEN "totalEntries" END), 0) as "1d",
+        COALESCE(MAX(CASE WHEN "endTime" >= $2 THEN "totalEntries" END), 0) as "7d",
+        COALESCE(MAX(CASE WHEN "endTime" >= $3 THEN "totalEntries" END), 0) as "30d",
+        COALESCE(MAX(CASE WHEN "endTime" >= $4 THEN "totalEntries" END), 0) as "1y",
+        COALESCE(MAX("totalEntries"), 0) as "all"
+      FROM sessions
+      WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
+    `, [t1d, t7d, t30d, t1y]);
+
+    const r = result.rows[0];
+    return {
+      '1d': parseInt(r['1d'] || 0),
+      '7d': parseInt(r['7d'] || 0),
+      '30d': parseInt(r['30d'] || 0),
+      '1y': parseInt(r['1y'] || 0),
+      'all': parseInt(r['all'] || 0)
+    };
   }
 
   async _getUniquePlayers() {
     const now = Date.now();
-    const periods = {
-      '1d': now - 1 * 24 * 60 * 60 * 1000,
-      '7d': now - 7 * 24 * 60 * 60 * 1000,
-      '30d': now - 30 * 24 * 60 * 60 * 1000,
-      '1y': now - 365 * 24 * 60 * 60 * 1000,
-      'all': 0
-    };
+    const t1d = now - 1 * 24 * 60 * 60 * 1000;
+    const t7d = now - 7 * 24 * 60 * 60 * 1000;
+    const t30d = now - 30 * 24 * 60 * 60 * 1000;
+    const t1y = now - 365 * 24 * 60 * 60 * 1000;
 
-    const results = {};
-    for (const [key, startTime] of Object.entries(periods)) {
-      // Count unique players who participated in sessions during this period
-      const result = await this.pool.query(`
-        SELECT COUNT(DISTINCT ps."playerGuid") as count
-        FROM player_sessions ps
-        JOIN sessions s ON ps."sessionId" = s.id
-        WHERE s."raceFinalized" = TRUE
-        ${startTime > 0 ? `AND s."endTime" >= $1` : ''}
-      `, startTime > 0 ? [startTime] : []);
-      results[key] = parseInt(result.rows[0]?.count || 0);
-    }
-    return results;
+    // Single query with subqueries for each period - more efficient than 5 separate queries
+    const result = await this.pool.query(`
+      SELECT
+        (SELECT COUNT(DISTINCT ps."playerGuid") FROM player_sessions ps JOIN sessions s ON ps."sessionId" = s.id WHERE s."raceFinalized" = TRUE AND s."endTime" >= $1) as "1d",
+        (SELECT COUNT(DISTINCT ps."playerGuid") FROM player_sessions ps JOIN sessions s ON ps."sessionId" = s.id WHERE s."raceFinalized" = TRUE AND s."endTime" >= $2) as "7d",
+        (SELECT COUNT(DISTINCT ps."playerGuid") FROM player_sessions ps JOIN sessions s ON ps."sessionId" = s.id WHERE s."raceFinalized" = TRUE AND s."endTime" >= $3) as "30d",
+        (SELECT COUNT(DISTINCT ps."playerGuid") FROM player_sessions ps JOIN sessions s ON ps."sessionId" = s.id WHERE s."raceFinalized" = TRUE AND s."endTime" >= $4) as "1y",
+        (SELECT COUNT(DISTINCT "playerGuid") FROM player_sessions) as "all"
+    `, [t1d, t7d, t30d, t1y]);
+
+    const r = result.rows[0];
+    return {
+      '1d': parseInt(r['1d'] || 0),
+      '7d': parseInt(r['7d'] || 0),
+      '30d': parseInt(r['30d'] || 0),
+      '1y': parseInt(r['1y'] || 0),
+      'all': parseInt(r['all'] || 0)
+    };
   }
 
   async _getDailyActivity(startTime) {
