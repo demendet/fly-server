@@ -1740,12 +1740,11 @@ export class PostgresDatabaseManager {
   }
 
   async _getHourlyActivity(startTime) {
-    // Get average activity by hour of day (UTC)
-    const result = await this.pool.query(`
+    // Get sessions per hour
+    const sessionsResult = await this.pool.query(`
       SELECT
         EXTRACT(HOUR FROM to_timestamp("startTime" / 1000.0)) as hour,
-        COUNT(*) as sessions,
-        AVG("totalEntries") as avg_players
+        COUNT(*) as sessions
       FROM sessions
       WHERE "raceFinalized" = TRUE
         AND "totalEntries" > 0
@@ -1754,21 +1753,35 @@ export class PostgresDatabaseManager {
       ORDER BY hour ASC
     `, [startTime]);
 
+    // Get peak players per hour from snapshots
+    const peakResult = await this.pool.query(`
+      SELECT
+        EXTRACT(HOUR FROM to_timestamp("timestamp" / 1000.0)) as hour,
+        MAX("playerCount") as peak_players
+      FROM player_count_snapshots
+      WHERE "timestamp" >= $1
+      GROUP BY EXTRACT(HOUR FROM to_timestamp("timestamp" / 1000.0))
+      ORDER BY hour ASC
+    `, [startTime]);
+
+    // Build sessions map
+    const sessionsMap = {};
+    sessionsResult.rows.forEach(r => {
+      sessionsMap[parseInt(r.hour)] = parseInt(r.sessions || 0);
+    });
+
+    // Build peak players map
+    const peakMap = {};
+    peakResult.rows.forEach(r => {
+      peakMap[parseInt(r.hour)] = parseInt(r.peak_players || 0);
+    });
+
     // Fill in all 24 hours
     const hourlyData = Array(24).fill(null).map((_, i) => ({
       hour: i,
-      sessions: 0,
-      avgPlayers: 0
+      sessions: sessionsMap[i] || 0,
+      peakPlayers: peakMap[i] !== undefined ? peakMap[i] : null // null means no data
     }));
-
-    result.rows.forEach(r => {
-      const hour = parseInt(r.hour);
-      hourlyData[hour] = {
-        hour,
-        sessions: parseInt(r.sessions || 0),
-        avgPlayers: Math.round(parseFloat(r.avg_players || 0) * 10) / 10
-      };
-    });
 
     return hourlyData;
   }
