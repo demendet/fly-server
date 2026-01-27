@@ -310,6 +310,20 @@ function startBulkCacheLoop() {
   setInterval(regenerateBulkCache, 15000);           // 15 seconds (reduced from 10s)
   setInterval(regenerateAllSessionsCache, 60000);    // 60 seconds (was 30s)
   setInterval(regenerateAllPlayersCache, 60000);     // 60 seconds (was 30s)
+  // Save player count snapshots every 5 minutes for historical peak tracking
+  setInterval(savePlayerCountSnapshot, 300000);      // 5 minutes
+  setTimeout(savePlayerCountSnapshot, 10000);        // First snapshot after 10s
+}
+
+async function savePlayerCountSnapshot() {
+  try {
+    const playerCount = getTotalPlayerCount();
+    const serverCount = getOnlineServers().length;
+    await db.savePlayerCountSnapshot(playerCount, serverCount);
+    console.log(`[SNAPSHOT] Saved: ${playerCount} players on ${serverCount} servers`);
+  } catch (err) {
+    console.error('[SNAPSHOT] Error:', err.message);
+  }
 }
 
 function cachedResponse(res, cache, maxAge = 3) {

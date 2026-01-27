@@ -268,6 +268,16 @@ export class PostgresDatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_streamer_apps_status ON streamer_applications(status);
         CREATE INDEX IF NOT EXISTS idx_streamer_apps_created ON streamer_applications("createdAt" DESC);
       `);
+      // Player count snapshots for tracking peak players across all servers
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS player_count_snapshots (
+          id SERIAL PRIMARY KEY,
+          "playerCount" INTEGER NOT NULL,
+          "serverCount" INTEGER DEFAULT 0,
+          "timestamp" BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON player_count_snapshots("timestamp" DESC);
+      `);
 
       // PERFORMANCE INDEXES - Critical for 47k+ players, 2M+ laps
       await client.query(`
@@ -1610,9 +1620,8 @@ export class PostgresDatabaseManager {
     const periodMs = ranges[range] || ranges['7d'];
     const startTime = now - periodMs;
 
-    // Get peak players and unique players for different time periods
+    // Get unique players and activity stats for different time periods
     const [
-      peakPlayers,
       uniquePlayers,
       dailyActivity,
       hourlyActivity,
@@ -1620,7 +1629,6 @@ export class PostgresDatabaseManager {
       sessionTrends,
       totalStats
     ] = await Promise.all([
-      this._getPeakPlayers(),
       this._getUniquePlayers(),
       this._getDailyActivity(startTime),
       this._getHourlyActivity(startTime),
@@ -1628,6 +1636,9 @@ export class PostgresDatabaseManager {
       this._getSessionTrends(startTime),
       this._getTotalServerStats()
     ]);
+
+    // Get peak players from snapshots
+    const peakPlayers = await this._getPeakPlayersFromSnapshots();
 
     return {
       peakPlayers,
@@ -1640,23 +1651,30 @@ export class PostgresDatabaseManager {
     };
   }
 
-  async _getPeakPlayers() {
+  // Save a player count snapshot (call every 5 minutes)
+  async savePlayerCountSnapshot(playerCount, serverCount) {
+    await this.pool.query(
+      `INSERT INTO player_count_snapshots ("playerCount", "serverCount", "timestamp") VALUES ($1, $2, $3)`,
+      [playerCount, serverCount, Date.now()]
+    );
+  }
+
+  // Get peak player counts from snapshots for different time periods
+  async _getPeakPlayersFromSnapshots() {
     const now = Date.now();
     const t1d = now - 1 * 24 * 60 * 60 * 1000;
     const t7d = now - 7 * 24 * 60 * 60 * 1000;
     const t30d = now - 30 * 24 * 60 * 60 * 1000;
     const t1y = now - 365 * 24 * 60 * 60 * 1000;
 
-    // Single query with CASE statements for all periods
     const result = await this.pool.query(`
       SELECT
-        COALESCE(MAX(CASE WHEN "endTime" >= $1 THEN "totalEntries" END), 0) as "1d",
-        COALESCE(MAX(CASE WHEN "endTime" >= $2 THEN "totalEntries" END), 0) as "7d",
-        COALESCE(MAX(CASE WHEN "endTime" >= $3 THEN "totalEntries" END), 0) as "30d",
-        COALESCE(MAX(CASE WHEN "endTime" >= $4 THEN "totalEntries" END), 0) as "1y",
-        COALESCE(MAX("totalEntries"), 0) as "all"
-      FROM sessions
-      WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
+        COALESCE(MAX(CASE WHEN "timestamp" >= $1 THEN "playerCount" END), 0) as "1d",
+        COALESCE(MAX(CASE WHEN "timestamp" >= $2 THEN "playerCount" END), 0) as "7d",
+        COALESCE(MAX(CASE WHEN "timestamp" >= $3 THEN "playerCount" END), 0) as "30d",
+        COALESCE(MAX(CASE WHEN "timestamp" >= $4 THEN "playerCount" END), 0) as "1y",
+        COALESCE(MAX("playerCount"), 0) as "all"
+      FROM player_count_snapshots
     `, [t1d, t7d, t30d, t1y]);
 
     const r = result.rows[0];
