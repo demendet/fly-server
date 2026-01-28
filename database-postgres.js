@@ -27,6 +27,7 @@ export class PostgresDatabaseManager {
       playerAvatars: { data: null, ts: 0, ttl: 120000 },      // 2 minutes - avatar map for all players
       topMMR: { data: null, ts: 0, ttl: 60000 },           // 60 seconds - leaderboards update slowly
       topSR: { data: null, ts: 0, ttl: 60000 },            // 60 seconds - leaderboards update slowly
+      playerRanks: { data: null, ts: 0, ttl: 60000 },      // 60 seconds - ranks don't change frequently
       sessionsCount: { data: null, ts: 0, ttl: 120000 },   // 2 minutes - total count rarely matters live
       recentSessions: { data: null, ts: 0, ttl: 15000 },   // 15 seconds - matches polling interval
       totalLapsCount: { data: null, ts: 0, ttl: 120000 },  // 2 minutes - total count rarely matters live
@@ -544,23 +545,44 @@ export class PostgresDatabaseManager {
   }
 
   _rowToPlayerSlim(r) {
-    return { guid: r.guid, displayName: r.displayName, mmr: r.mmr, safetyRating: r.safetyRating, totalRaces: r.totalRaces, wins: r.wins, podiums: r.podiums, holeshots: r.holeshots, lastSeen: r.lastSeen ? parseInt(r.lastSeen) : null, firstSeen: r.firstSeen ? parseInt(r.firstSeen) : null, currentServer: r.currentServer, profileImageUrl: r.steamAvatarUrl || null, totalPlaytime: r.totalPlaytime ? parseInt(r.totalPlaytime) : 0, underInvestigation: r.underInvestigation || false };
+    return { guid: r.guid, displayName: r.displayName, mmr: r.mmr, safetyRating: r.safetyRating, totalRaces: r.totalRaces, wins: r.wins, podiums: r.podiums, holeshots: r.holeshots, lastSeen: r.lastSeen ? parseInt(r.lastSeen) : null, firstSeen: r.firstSeen ? parseInt(r.firstSeen) : null, currentServer: r.currentServer, profileImageUrl: r.steamAvatarUrl || null, totalPlaytime: r.totalPlaytime ? parseInt(r.totalPlaytime) : 0, underInvestigation: r.underInvestigation || false, mmrRank: r.mmr_rank ? parseInt(r.mmr_rank) : null };
+  }
+
+  // Pre-compute ALL player ranks - cached separately for 60s (ranks don't change often)
+  // This is a lightweight query: just guid + rank, ~56k rows
+  async _getPlayerRanksMap() {
+    return this._cached('playerRanks', async () => {
+      const result = await this.pool.query(`
+        SELECT guid, ROW_NUMBER() OVER (ORDER BY mmr DESC) as mmr_rank
+        FROM players
+      `);
+      const map = new Map();
+      result.rows.forEach(r => map.set(r.guid, parseInt(r.mmr_rank)));
+      return map;
+    });
   }
 
   // For bulk API - limited data for fast homepage loading
   // Search uses searchPlayers() which queries ALL players
   async getAllPlayersSlim() {
     return this._cached('playersSlim', async () => {
-      // Only recent/active players for bulk - search API handles finding anyone
-      const result = await this.pool.query(`
-        SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots,
-               "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime", "underInvestigation"
-        FROM players
-        WHERE "lastSeen" > $1 OR mmr > 1100 OR "totalRaces" > 5
-        ORDER BY "lastSeen" DESC
-        LIMIT 2000
-      `, [Date.now() - 30 * 24 * 60 * 60 * 1000]);
-      return result.rows.map(r => this._rowToPlayerSlim(r));
+      // Fetch players and ranks in parallel for speed
+      const [playersResult, ranksMap] = await Promise.all([
+        this.pool.query(`
+          SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots,
+                 "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime", "underInvestigation"
+          FROM players
+          WHERE "lastSeen" > $1 OR mmr > 1100 OR "totalRaces" > 5
+          ORDER BY "lastSeen" DESC
+          LIMIT 2000
+        `, [Date.now() - 30 * 24 * 60 * 60 * 1000]),
+        this._getPlayerRanksMap()
+      ]);
+      // Merge ranks into player data
+      return playersResult.rows.map(r => ({
+        ...this._rowToPlayerSlim(r),
+        mmrRank: ranksMap.get(r.guid) || null
+      }));
     });
   }
 
@@ -571,7 +593,7 @@ export class PostgresDatabaseManager {
     const dir = sortDir.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
     const offset = (page - 1) * limit;
 
-    const [players, countResult] = await Promise.all([
+    const [players, countResult, ranksMap] = await Promise.all([
       this.pool.query(`
         SELECT guid, "displayName", mmr, "safetyRating", "totalRaces", wins, podiums, holeshots,
                "lastSeen", "firstSeen", "currentServer", "steamAvatarUrl", "totalPlaytime"
@@ -579,11 +601,15 @@ export class PostgresDatabaseManager {
         ORDER BY "${sort}" ${dir} NULLS LAST
         LIMIT $1 OFFSET $2
       `, [limit, offset]),
-      this._cached('totalPlayersCount', () => this.pool.query('SELECT COUNT(*) FROM players').then(r => parseInt(r.rows[0].count)))
+      this._cached('totalPlayersCount', () => this.pool.query('SELECT COUNT(*) FROM players').then(r => parseInt(r.rows[0].count))),
+      this._getPlayerRanksMap()
     ]);
 
     return {
-      players: players.rows.map(r => this._rowToPlayerSlim(r)),
+      players: players.rows.map(r => ({
+        ...this._rowToPlayerSlim(r),
+        mmrRank: ranksMap.get(r.guid) || null
+      })),
       total: countResult,
       page,
       totalPages: Math.ceil(countResult / limit)
