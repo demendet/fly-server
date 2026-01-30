@@ -118,7 +118,7 @@ export class StateManager {
       if (!data) return;
 
       const state = data.session?.session_state || 'UNKNOWN';
-      const riders = data.riders || [];
+      let riders = data.riders || [];
       const sid = info.sessionId;
 
       // Cache race results while we have rider data (backup for finalization)
@@ -126,32 +126,46 @@ export class StateManager {
         this.lastRaceResults.set(sid, { riders, serverId, timestamp: Date.now() });
       }
 
-      // Check for RACEOVER
-      if (state === 'RACEOVER' && !this.mmrSentSessions.has(sid)) {
-        console.log(`[RACE-WATCHER] RACEOVER detected for ${serverId} (session ${sid}) with ${riders.length} riders!`);
+      // FIX: Handle both RACEOVER and COMPLETE states - some servers skip RACEOVER entirely
+      const isRaceEnded = (state === 'RACEOVER' || state === 'COMPLETE');
+      if (isRaceEnded && !this.mmrSentSessions.has(sid)) {
+        // FIX: If riders are empty at RACEOVER/COMPLETE, use cached race results
+        // The game often clears rider data before we can read it
+        if (riders.length === 0) {
+          const cachedRace = this.lastRaceResults.get(sid);
+          if (cachedRace?.riders?.length > 0) {
+            console.log(`[RACE-WATCHER] ${state} detected for ${serverId} (session ${sid}) - riders empty, using cached results (${cachedRace.riders.length} riders from ${Math.round((Date.now() - cachedRace.timestamp) / 1000)}s ago)`);
+            riders = cachedRace.riders;
+          } else {
+            console.warn(`[RACE-WATCHER] ${state} detected for ${serverId} (session ${sid}) - NO riders and NO cached results!`);
+          }
+        } else {
+          console.log(`[RACE-WATCHER] ${state} detected for ${serverId} (session ${sid}) with ${riders.length} riders!`);
+        }
+
         this.processingRaceSessions.add(sid);
-        this.mmrSentSessions.add(sid);
         try {
           // Build server object for _processRaceOverAsync
           const srv = { id: serverId, name: data.server?.name || serverId, riders, session: data.session };
-          await this._processRaceOverAsync(srv, sid);
-          console.log(`[RACE-WATCHER] Successfully saved results for ${sid}`);
+          const saved = await this._processRaceOverAsync(srv, sid);
+          if (saved) {
+            // FIX: Only set mmrSentSessions AFTER results are confirmed saved
+            this.mmrSentSessions.add(sid);
+            console.log(`[RACE-WATCHER] Successfully saved results for ${sid}`);
+          } else {
+            console.warn(`[RACE-WATCHER] No results to save for ${sid} (no riders)`);
+          }
         } catch (e) {
           console.error(`[RACE-WATCHER] Failed to save results for ${sid}:`, e.message);
-          // Check if we already saved results
-          const session = await this.db.getSession(sid);
-          if (!session?.raceResults?.length) {
-            this.mmrSentSessions.delete(sid);
-          }
+          // Don't set mmrSentSessions - allow retry
         } finally {
           this.processingRaceSessions.delete(sid);
         }
       }
 
-      // If state changed to WAITING, remove from race watcher
+      // If state changed to WAITING or UNKNOWN, remove from race watcher
       if (state === 'WAITING' || state === 'UNKNOWN') {
         this.racePhaseServers.delete(serverId);
-        console.log(`[RACE-WATCHER] Removed ${serverId} - state is ${state}`);
       }
     });
 
@@ -289,6 +303,17 @@ export class StateManager {
       const cachedPhase = this.serverSessionPhases.get(srv.id) || '';
       const phase = (srv.session_type || '').toLowerCase() || cachedPhase;
       const isWarmup = phase.includes('warmup') || phase.includes('practice');
+      const isRacePhase = phase.includes('race') || phase.includes('qualify');
+
+      // FIX: Cache race-phase rider data in main cycle too (not just race watcher)
+      // This provides a backup cache if the race watcher misses data due to network issues
+      if (sid && isRacePhase && (state === 'INPROGRESS' || state === 'STARTSEQUENCE' || state === 'PRESTART')) {
+        const riders = srv.riders || [];
+        if (riders.length > 0) {
+          this.lastRaceResults.set(sid, { riders, serverId: srv.id, timestamp: Date.now() });
+        }
+      }
+
       if (sid && state === 'INPROGRESS' && isWarmup) {
         const riders = srv.riders || [];
         if (riders.length) {
@@ -400,25 +425,31 @@ export class StateManager {
       }
       return;
     }
-    if (state === 'RACEOVER' && isRace) {
+    // FIX: Handle both RACEOVER and COMPLETE in main cycle too
+    if ((state === 'RACEOVER' || state === 'COMPLETE') && isRace) {
       const sid = this.serverSessions.get(srv.id);
       if (!sid || this.mmrSentSessions.has(sid)) return;
       // Mark session as being processed to prevent race conditions with finalization
       this.processingRaceSessions.add(sid);
-      this.mmrSentSessions.add(sid);
       // Process race results - await to prevent race condition with finalization
       try {
-        await this._processRaceOverAsync(srv, sid);
+        const saved = await this._processRaceOverAsync(srv, sid);
+        if (saved) {
+          // FIX: Only set mmrSentSessions AFTER successful save
+          this.mmrSentSessions.add(sid);
+        } else {
+          console.log(`[RACEOVER] ${sid} - no results saved, will retry`);
+        }
       } catch (e) {
         console.error(`[RACEOVER] Error ${sid}:`, e.message);
-        // Only remove mmrSentSessions marker if we truly failed - allows retry on next cycle
-        // But check if we already wrote results to DB first
+        // Don't set mmrSentSessions on error - allows retry on next cycle
         const session = await this.db.getSession(sid);
-        if (!session?.raceResults?.length) {
-          this.mmrSentSessions.delete(sid);
-          console.log(`[RACEOVER] ${sid} - will retry on next cycle`);
-        } else {
+        if (session?.raceResults?.length > 0) {
+          // Results were actually saved despite error (partial failure)
+          this.mmrSentSessions.add(sid);
           console.log(`[RACEOVER] ${sid} - results already saved, marking finalized`);
+        } else {
+          console.log(`[RACEOVER] ${sid} - will retry on next cycle`);
         }
       } finally {
         this.processingRaceSessions.delete(sid);
@@ -444,31 +475,27 @@ export class StateManager {
           console.warn(`[FINALIZE] ${sid} - race processing timed out, finalizing anyway`);
         }
       }
-      // Check DB state to determine if race was finalized (more reliable than in-memory set)
+      // FIX: Check ONLY the database for actual results - never use mmrSentSessions as proxy
+      // mmrSentSessions can be incorrectly set if _processRaceOverAsync returned without saving
       let session = await this.db.getSession(sid);
-      let hasResults = (session?.raceResults?.length > 0) || this.mmrSentSessions.has(sid);
+      let hasResults = session?.raceResults?.length > 0;
 
-      // CRITICAL FIX: If this was a race session and we missed RACEOVER, try to save results now
-      // This catches sessions that were being lost due to polling missing RACEOVER state
-      if (wasRace && !hasResults && !this.mmrSentSessions.has(sid)) {
-        console.log(`[FINALIZE] ${sid} - Race ended but RACEOVER was missed! Attempting to save results...`);
+      // CRITICAL FIX: If this was a race session and we don't have results in DB, try to save now
+      // This is the last-resort recovery for any race that was missed by race watcher AND main cycle
+      if (wasRace && !hasResults) {
+        console.log(`[FINALIZE] ${sid} - Race ended but no results in DB! Attempting late save...`);
         try {
           // Mark as processing to prevent double-processing
           this.processingRaceSessions.add(sid);
-          this.mmrSentSessions.add(sid);
 
-          // Use cached race results if live riders are empty (END message clears them)
-          const cachedRace = this.lastRaceResults.get(sid);
-          let srvToProcess = srv;
-          if ((!srv.riders || srv.riders.length === 0) && cachedRace?.riders?.length > 0) {
-            console.log(`[FINALIZE] ${sid} - Using cached race results (${cachedRace.riders.length} riders from ${Math.round((Date.now() - cachedRace.timestamp) / 1000)}s ago)`);
-            srvToProcess = { ...srv, riders: cachedRace.riders };
-          }
-
-          await this._processRaceOverAsync(srvToProcess, sid);
+          // _processRaceOverAsync will automatically use cached results if live riders are empty
+          const saved = await this._processRaceOverAsync(srv, sid);
           // Re-check if results were saved
           session = await this.db.getSession(sid);
-          hasResults = (session?.raceResults?.length > 0);
+          hasResults = session?.raceResults?.length > 0;
+          if (saved) {
+            this.mmrSentSessions.add(sid);
+          }
           console.log(`[FINALIZE] ${sid} - Late result save ${hasResults ? 'SUCCEEDED' : 'FAILED'}: ${session?.raceResults?.length || 0} results`);
         } catch (e) {
           console.error(`[FINALIZE] ${sid} - Late result save error:`, e.message);
@@ -508,17 +535,30 @@ export class StateManager {
         this.insertedHoleshots.delete(sid);
         this.insertedContacts.delete(sid);
         this.cachedWarmupStates.delete(sid);
+        this.lastWarmupResults.delete(sid);
+        this.lastRaceResults.delete(sid);
+        this.racePhaseServers.delete(srv.id);
+        this.mmrSentSessions.delete(sid);
       }
     }
   }
 
+  // Returns true if results were saved, false if no riders/results to save
   async _processRaceOverAsync(srv, sid) {
-    const riders = srv.riders || [];
+    let riders = srv.riders || [];
+
+    // FIX: If no riders from live data, try cached race results
     if (!riders.length) {
-      // Even with no riders, mark session as processed to prevent endless retries
-      console.log(`[RACEOVER] ${sid}: No riders present`);
-      return;
+      const cachedRace = this.lastRaceResults.get(sid);
+      if (cachedRace?.riders?.length > 0) {
+        console.log(`[RACEOVER] ${sid}: No live riders, using cached results (${cachedRace.riders.length} riders from ${Math.round((Date.now() - cachedRace.timestamp) / 1000)}s ago)`);
+        riders = cachedRace.riders;
+      } else {
+        console.warn(`[RACEOVER] ${sid}: No riders present and no cached results`);
+        return false;
+      }
     }
+
     try {
       // Include ALL riders, not just those with laps - they participated in the session
       const withLaps = riders.filter(r => r.total_laps > 0);
@@ -562,10 +602,12 @@ export class StateManager {
         }
         const winner = lapResults[0];
         console.log(`[RACEOVER] ${sid}: ${lapResults.length} finishers, ${noLapResults.length} DNS/DNF${winner ? `, Winner: ${winner.playerName}` : ''}`);
+        return true;
       } else {
         // No participants at all - still mark session with empty results
         await this.db.updateSession(sid, { raceResults: [], totalEntries: 0 });
         console.log(`[RACEOVER] ${sid}: No participants`);
+        return false;
       }
     } catch (e) { console.error('[RACEOVER] Error:', e.message); throw e; }
   }
