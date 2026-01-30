@@ -722,24 +722,40 @@ export class PostgresDatabaseManager {
   async getSessionsCursor(cursor = null, limit = 25) {
     // Cursor-based pagination - O(1) performance regardless of page depth
     // cursor is the endTime of the last session from previous page
-    // Using endTime ensures sessions are ordered by when they FINISHED, not started
+    // OPTIMIZATION: Only select columns needed for list view + top 3 podium from results
+    // This avoids transferring massive JSONB blobs (warmupResults/raceResults with 20+ riders each)
+    const selectSlim = `
+      SELECT id, "serverId", "serverName", "trackName", "eventName", "sessionType",
+             "currentSessionPhase", "sessionState", "startTime", "endTime",
+             "totalEntries", "hasFinished", "raceFinalized", "isActive", "createdAt",
+             CASE WHEN jsonb_array_length(COALESCE("raceResults", '[]'::jsonb)) > 0
+                  THEN (SELECT jsonb_agg(elem) FROM (SELECT elem FROM jsonb_array_elements("raceResults") AS elem LIMIT 3) sub)
+                  ELSE '[]'::jsonb END AS "raceResultsTop3",
+             CASE WHEN jsonb_array_length(COALESCE("warmupResults", '[]'::jsonb)) > 0
+                  THEN (SELECT jsonb_agg(elem) FROM (SELECT elem FROM jsonb_array_elements("warmupResults") AS elem LIMIT 3) sub)
+                  ELSE '[]'::jsonb END AS "warmupResultsTop3",
+             jsonb_array_length(COALESCE("raceResults", '[]'::jsonb)) AS "raceResultsCount",
+             jsonb_array_length(COALESCE("warmupResults", '[]'::jsonb)) AS "warmupResultsCount"
+    `;
     let result;
     if (cursor) {
       result = await this.pool.query(`
-        SELECT * FROM sessions
+        ${selectSlim}
+        FROM sessions
         WHERE "raceFinalized" = TRUE AND "totalEntries" > 0 AND "endTime" < $1
         ORDER BY "endTime" DESC
         LIMIT $2
       `, [cursor, limit]);
     } else {
       result = await this.pool.query(`
-        SELECT * FROM sessions
+        ${selectSlim}
+        FROM sessions
         WHERE "raceFinalized" = TRUE AND "totalEntries" > 0
         ORDER BY "endTime" DESC
         LIMIT $1
       `, [limit]);
     }
-    const sessions = result.rows.map(r => this._rowToSession(r));
+    const sessions = result.rows.map(r => this._rowToSessionSlim(r));
     const nextCursor = sessions.length === limit ? sessions[sessions.length - 1].endTime : null;
     return { sessions, nextCursor };
   }
@@ -799,6 +815,11 @@ export class PostgresDatabaseManager {
 
   _rowToSession(r) {
     return { id: r.id, serverId: r.serverId, serverName: r.serverName, trackName: r.trackName, eventName: r.eventName, sessionType: r.sessionType, currentSessionPhase: r.currentSessionPhase, sessionState: r.sessionState, weatherConditions: r.weatherConditions, airTemperature: r.airTemperature, trackLength: r.trackLength, startTime: r.startTime ? parseInt(r.startTime) : null, endTime: r.endTime ? parseInt(r.endTime) : null, warmupResults: r.warmupResults || [], raceResults: r.raceResults || [], totalEntries: r.totalEntries, hasFinished: r.hasFinished, raceFinalized: r.raceFinalized, isActive: r.isActive, createdAt: r.createdAt ? parseInt(r.createdAt) : null };
+  }
+
+  // Slim version for list views - uses top 3 podium results instead of full arrays
+  _rowToSessionSlim(r) {
+    return { id: r.id, serverId: r.serverId, serverName: r.serverName, trackName: r.trackName, eventName: r.eventName, sessionType: r.sessionType, currentSessionPhase: r.currentSessionPhase, sessionState: r.sessionState, startTime: r.startTime ? parseInt(r.startTime) : null, endTime: r.endTime ? parseInt(r.endTime) : null, warmupResults: r.warmupResultsTop3 || [], raceResults: r.raceResultsTop3 || [], raceResultsCount: parseInt(r.raceResultsCount) || 0, warmupResultsCount: parseInt(r.warmupResultsCount) || 0, totalEntries: r.totalEntries, hasFinished: r.hasFinished, raceFinalized: r.raceFinalized, isActive: r.isActive, createdAt: r.createdAt ? parseInt(r.createdAt) : null };
   }
 
   async checkSinglePlayerPB(rec) {
