@@ -457,8 +457,9 @@ export class StateManager {
       return;
     }
     const isUnknown = state === 'UNKNOWN' || state === '--' || !state;
-    const isWaiting = state === 'WAITING' || (isUnknown && !phase);
-    const shouldFinalize = (prevState === 'COMPLETE' && wasRace) || (wasRace && isWaiting) || (wasRace && isWarmup && state === 'INPROGRESS');
+    // Treat unknown/-- state as waiting if phase is not actively racing (prevents API glitch false-finalization)
+    const isWaiting = state === 'WAITING' || (isUnknown && !isRace);
+    const shouldFinalize = (prevState === 'COMPLETE' && wasRace) || (prevState === 'RACEOVER' && wasRace) || (wasRace && isWaiting) || (wasRace && isWarmup && state === 'INPROGRESS');
     if (shouldFinalize) {
       check();
       const sid = this.serverSessions.get(srv.id);

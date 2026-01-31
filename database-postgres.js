@@ -885,17 +885,25 @@ export class PostgresDatabaseManager {
   }
 
   // Paginated track records for a specific track - FAST with proper indexes
-  async getTrackRecordsPaginated(trackName, page = 1, limit = 50) {
+  // categories can be a single string, array of strings, or null for all
+  async getTrackRecordsPaginated(trackName, page = 1, limit = 50, categories = null) {
     const offset = (page - 1) * limit;
+    const baseParams = [trackName];
+    let whereBase = `WHERE "trackName" = $1`;
+    if (categories && categories.length > 0) {
+      const placeholders = categories.map((_, i) => `$${i + 2}`).join(', ');
+      whereBase += ` AND "bikeCategory" IN (${placeholders})`;
+      baseParams.push(...categories);
+    }
     const [records, countResult] = await Promise.all([
       this.pool.query(`
         SELECT *, ROW_NUMBER() OVER (ORDER BY "lapTime" ASC) as position
         FROM track_records
-        WHERE "trackName" = $1
+        ${whereBase}
         ORDER BY "lapTime" ASC
-        LIMIT $2 OFFSET $3
-      `, [trackName, limit, offset]),
-      this.pool.query(`SELECT COUNT(*) FROM track_records WHERE "trackName" = $1`, [trackName])
+        LIMIT $${baseParams.length + 1} OFFSET $${baseParams.length + 2}
+      `, [...baseParams, limit, offset]),
+      this.pool.query(`SELECT COUNT(*) FROM track_records ${whereBase}`, baseParams)
     ]);
     return {
       records: records.rows.map(r => ({ ...this._rowToRecord(r), position: parseInt(r.position) })),

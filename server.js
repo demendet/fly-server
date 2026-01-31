@@ -451,6 +451,18 @@ app.get('/api/sessions/cursor', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Per-track records with server-side pagination
+app.get('/api/records/:trackName', async (req, res) => {
+  try {
+    const trackName = decodeURIComponent(req.params.trackName);
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 25));
+    const categories = req.query.categories ? req.query.categories.split(',').filter(Boolean) : null;
+    const result = await db.getTrackRecordsPaginated(trackName, page, limit, categories);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/player/:guid', async (req, res) => {
   try {
     const upperGuid = req.params.guid.toUpperCase();
