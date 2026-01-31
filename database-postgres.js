@@ -924,6 +924,41 @@ export class PostgresDatabaseManager {
     return result.rows[0]?.position || null;
   }
 
+  // Get player's record on a track with position and total count
+  async getPlayerTrackRecord(trackName, playerGuid) {
+    const [recordResult, countResult] = await Promise.all([
+      this.pool.query(`
+        SELECT *, position FROM (
+          SELECT *, ROW_NUMBER() OVER (ORDER BY "lapTime" ASC) as position
+          FROM track_records WHERE "trackName" = $1
+        ) ranked WHERE "playerGuid" = $2
+      `, [trackName, playerGuid.toUpperCase()]),
+      this.pool.query(`SELECT COUNT(*) FROM track_records WHERE "trackName" = $1`, [trackName])
+    ]);
+    if (!recordResult.rows.length) return null;
+    const r = recordResult.rows[0];
+    return { ...this._rowToRecord(r), position: parseInt(r.position), total: parseInt(countResult.rows[0].count) };
+  }
+
+  // Get positions for ALL of a player's records across all tracks (for profile page)
+  async getPlayerRecordPositions(playerGuid) {
+    const result = await this.pool.query(`
+      SELECT r."trackName", r."lapTime", ranked.position, ranked.total
+      FROM track_records r
+      INNER JOIN (
+        SELECT "trackName", "playerGuid", ROW_NUMBER() OVER (PARTITION BY "trackName" ORDER BY "lapTime" ASC) as position,
+               COUNT(*) OVER (PARTITION BY "trackName") as total
+        FROM track_records
+      ) ranked ON r."trackName" = ranked."trackName" AND r."playerGuid" = ranked."playerGuid"
+      WHERE r."playerGuid" = $1
+    `, [playerGuid.toUpperCase()]);
+    const positions = {};
+    for (const row of result.rows) {
+      positions[row.trackName] = { position: parseInt(row.position), total: parseInt(row.total) };
+    }
+    return positions;
+  }
+
   // Get list of all tracks with record counts - cached for performance
   async getTrackList() {
     return this._cached('trackList', async () => {

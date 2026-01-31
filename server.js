@@ -509,7 +509,8 @@ app.get('/api/records/track/:trackName', async (req, res) => {
     const { trackName } = req.params;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
-    const result = await db.getTrackRecordsPaginated(decodeURIComponent(trackName), page, limit);
+    const categories = req.query.categories ? req.query.categories.split(',').map(c => c.trim()).filter(Boolean) : null;
+    const result = await db.getTrackRecordsPaginated(decodeURIComponent(trackName), page, limit, categories);
     res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -517,11 +518,19 @@ app.get('/api/records/track/:trackName', async (req, res) => {
 // Find player's position on a track
 app.get('/api/records/track/:trackName/player/:guid', async (req, res) => {
   try {
-    const position = await db.getPlayerTrackPosition(
+    const record = await db.getPlayerTrackRecord(
       decodeURIComponent(req.params.trackName),
       req.params.guid
     );
-    res.json({ position });
+    res.json(record || { position: null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Bulk: get player's positions across ALL tracks (for profile page)
+app.get('/api/player/:guid/record-positions', async (req, res) => {
+  try {
+    const positions = await db.getPlayerRecordPositions(req.params.guid);
+    res.json({ positions });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
