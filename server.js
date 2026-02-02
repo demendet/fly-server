@@ -714,7 +714,51 @@ app.post('/api/ban-appeals', requireAuth, async (req, res) => {
 
 app.get('/api/ban-appeals/my', requireAuth, async (req, res) => { try { await db.autoResolveExpiredAppeals(); res.json(await db.getUserAppeals(req.userId)); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/ban-appeals/can-appeal', requireAuth, async (req, res) => { try { if (!req.query.playerGuid) return res.status(400).json({ error: 'Missing playerGuid' }); res.json(await db.canUserAppeal(req.userId, req.query.playerGuid.toUpperCase())); } catch (err) { res.status(500).json({ error: err.message }); } });
-app.get('/api/admin/ban-appeals', requireAuth, requireModerator, async (req, res) => { try { await db.autoResolveExpiredAppeals(); res.json(await db.getAllAppeals(req.query.status || null)); } catch (err) { res.status(500).json({ error: err.message }); } });
+app.get('/api/admin/ban-appeals', requireAuth, requireModerator, async (req, res) => {
+  try {
+    await db.autoResolveExpiredAppeals();
+    const appeals = await db.getAllAppeals(req.query.status || null);
+    // Enrich each appeal with bannedBy, evidenceUrl from ban history, and appeal count
+    const guidAppealCounts = {};
+    for (const a of appeals) {
+      const g = a.playerGuid?.toUpperCase();
+      if (g) guidAppealCounts[g] = (guidAppealCounts[g] || 0) + 1;
+    }
+    // Assign appeal numbers (per player, oldest first = #1)
+    const guidCounters = {};
+    const sortedByOldest = [...appeals].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    const appealNumberMap = {};
+    for (const a of sortedByOldest) {
+      const g = a.playerGuid?.toUpperCase();
+      if (g) {
+        guidCounters[g] = (guidCounters[g] || 0) + 1;
+        appealNumberMap[a.id] = guidCounters[g];
+      }
+    }
+    // Fetch ban history for unique GUIDs
+    const uniqueGuids = [...new Set(appeals.map(a => a.playerGuid?.toUpperCase()).filter(Boolean))];
+    const banHistoryMap = {};
+    await Promise.all(uniqueGuids.map(async (guid) => {
+      try {
+        const history = await db.getBanHistory(guid);
+        const latestBan = history?.find(h => h.action === 'ban');
+        if (latestBan) banHistoryMap[guid] = latestBan;
+      } catch {}
+    }));
+    const enriched = appeals.map(a => {
+      const g = a.playerGuid?.toUpperCase();
+      const banEntry = g ? banHistoryMap[g] : null;
+      return {
+        ...a,
+        bannedBy: banEntry?.performedBy || null,
+        banEvidenceUrl: banEntry?.evidenceUrl || null,
+        playerAppealCount: g ? (guidAppealCounts[g] || 1) : 1,
+        playerAppealNumber: appealNumberMap[a.id] || 1
+      };
+    });
+    res.json(enriched);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.post('/api/admin/ban-appeals/:id/claim', requireAuth, requireModerator, async (req, res) => {
   try {
@@ -825,6 +869,7 @@ app.post('/api/admin/ban-appeals/:id/transfer', requireAuth, requireAdmin, async
 
 app.delete('/api/admin/reports/:id', requireAuth, requireAdmin, async (req, res) => { try { const d = await db.deleteReport(req.params.id); d ? res.json({ success: true }) : res.status(404).json({ error: 'Not found' }); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.delete('/api/admin/ban-appeals/:id', requireAuth, requireAdmin, async (req, res) => { try { const d = await db.deleteAppeal(req.params.id); d ? res.json({ success: true }) : res.status(404).json({ error: 'Not found' }); } catch (err) { res.status(500).json({ error: err.message }); } });
+app.get('/api/player/:guid/ban-appeals', async (req, res) => { try { const appeals = await db.getAppealsByPlayer(req.params.guid.toUpperCase()); res.json(appeals.map(a => ({ id: a.id, appealIndex: a.appealIndex, status: a.status, appealReason: a.appealReason, resolution: a.resolution, resolvedBy: a.resolvedBy, resolvedAt: a.resolvedAt, createdAt: a.createdAt }))); } catch (err) { res.status(500).json({ error: err.message }); } });
 
 app.get('/api/notifications', requireAuth, async (req, res) => { try { res.json(await db.getUserNotifications(req.userId, parseInt(req.query.limit) || 20)); } catch (err) { res.status(500).json({ error: err.message }); } });
 app.get('/api/notifications/unread-count', requireAuth, async (req, res) => { try { res.json({ count: await db.getUnreadNotificationCount(req.userId) }); } catch (err) { res.status(500).json({ error: err.message }); } });
